@@ -1,606 +1,696 @@
-/* Dashboard DDL di bilancio 2027-2029. Nessuna dipendenza esterna. */
+/* Legge di bilancio 2027-2029: lettura guidata. Nessuna dipendenza esterna.
+   Fonti: testo del DDL (articoli, allegati 1, 5, 6, 7) e Relazione tecnica. */
 (function () {
   "use strict";
 
-  // ---------- utilita' ----------
+  // ---------------- utilita' ----------------
   const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const nf0 = new Intl.NumberFormat("it-IT", { maximumFractionDigits: 0 });
   const nf1 = new Intl.NumberFormat("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-  const fE = (n) => (n == null || isNaN(n) ? "n.d." : nf0.format(Math.round(n)));
-  const fM = (n) => (n == null || isNaN(n) ? "n.d." : nf1.format(n / 1e6).replace(/^-(0,0)$/, "$1"));
-  const fMl = (n) => (n == null || isNaN(n) ? "n.d." : Math.abs(n) >= 1e9 ? nf1.format(n / 1e9) + " mld" : nf1.format(n / 1e6) + " mln");
-  const fP = (x) => (x == null || !isFinite(x) ? "n.d." : nf1.format(x * 100) + "%");
-  const sgn = (n) => (n < 0 ? "neg" : n > 0 ? "pos" : "");
-  const cap = (s) => { s = String(s || ""); return s === s.toUpperCase() ? (s.charAt(0) + s.slice(1).toLowerCase()).replace(/made in italy/g, "made in Italy").replace(/\b(inps|iva|ue|pnrr|cnel|ssn)\b/g, (m) => m.toUpperCase()) : s; };
-  const minShort = (m) => cap(m).replace(/^Ministero (dell'|della |delle |del |degli |dei )?/i, "").replace(/^./, (c) => c.toUpperCase())
-    .replace("Affari esteri e della cooperazione internazionale", "Affari esteri e coop. int.").replace("Agricoltura, della sovranita' alimentare e delle foreste", "Agricoltura e sovranità alim.");
   const sum = (a) => a.reduce((s, x) => s + (x || 0), 0);
+  const eur = (n) => {
+    if (n == null || isNaN(n)) return "n.d.";
+    const a = Math.abs(n);
+    if (a >= 1e9) return nf1.format(n / 1e9) + " mld €";
+    if (a >= 1e6) return nf1.format(n / 1e6) + " mln €";
+    if (a >= 1e3) return nf0.format(n / 1e3) + " mila €";
+    return nf0.format(n) + " €";
+  };
+  const eurS = (n) => eur(n).replace(" €", ""); // compatto per etichette
+  const pct = (x) => (isFinite(x) ? nf1.format(x * 100) + "%" : "n.d.");
+  const cap = (s) => { s = String(s || ""); s = s === s.toUpperCase() ? s.charAt(0) + s.slice(1).toLowerCase() : s; return s.replace(/^(titolo|capo) ([ivxl]+)\b/i, (m, a, b) => a + " " + b.toUpperCase()).replace(/made in italy/gi, "made in Italy").replace(/\bue\b/g, "UE").replace(/\bcnel\b/gi, "CNEL"); };
+  const fold = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[’'`]/g, " ");
+  const enc = encodeURIComponent, dec = decodeURIComponent;
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  const S = { al: null, lb: null, dlb: null, art: null, meta: null };
-  const state = {
-    pano: { year: 0 },
-    set: { mode: "ministero", open: new Set(), sort: null },
-    prog: { key: null, tit: 2, yi: 0, net: false, cuts: null, inc: null },
-    pg: { amm: "", tit: "", cat: "", q: "", only: false, sort: "cp2", page: 0 },
-    var: { amm: "", yi: 0, q: "", page: 0 },
-    art: { q: "", tit: "" },
+  const ICO = {
+    min: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V10m4 11V10m6 11V10m4 11V10M2 10l10-6 10 6"/></svg>',
+    mis: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>',
+    arg: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
   };
 
-  // ---------- caricamento ----------
+  // ---------------- dati ----------------
+  const D = {};
   async function load() {
-    const j = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u); return r.json(); });
-    const [al, lb, art] = await Promise.all([j("data/allegati.json"), j("data/lb_pg.json"), j("data/articoli.json")]);
-    S.al = al.allegati; S.a4 = al.allegato4; S.meta = al.meta; S.lb = lb; S.art = art;
-    if (al.meta.dlb) { try { S.dlb = await j("data/dlb_pg.json"); } catch (e) { S.dlb = null; } }
-    index();
-  }
-
-  function colIndex(ds) { const c = {}; ds.cols.forEach((k, i) => (c[k] = i)); return c; }
-
-  // Indici: baseline LB per programma e titolo; registro programmi degli allegati.
-  function index() {
-    const lb = S.lb, C = (S.lbC = colIndex(lb)), D = lb.dict;
-    S.base = new Map(); S.baseMin = new Map(); S.misNaz = new Map();
-    for (const r of lb.rows) {
-      const amm = D[r[C.amm]], k = amm + "|" + r[C.udv1] + "|" + r[C.udv2];
-      let b = S.base.get(k);
-      if (!b) { b = { amm, mis: D[r[C.mis]], prg: D[r[C.prg]], t: { 1: [0, 0, 0], 2: [0, 0, 0], 3: [0, 0, 0] }, f: [0, 0, 0] }; S.base.set(k, b); }
-      const t = b.t[r[C.tit]] || (b.t[r[C.tit]] = [0, 0, 0]);
-      t[0] += r[C.cp1]; t[1] += r[C.cp2]; t[2] += r[C.cp3];
-      if ((r[C.tit] === 1 || r[C.tit] === 2) && !S.meta.cat_rigide.includes(String(r[C.cat]))) { b.f[0] += r[C.cp1]; b.f[1] += r[C.cp2]; b.f[2] += r[C.cp3]; }
-      let m = S.baseMin.get(amm); if (!m) S.baseMin.set(amm, (m = { 1: [0, 0, 0], 2: [0, 0, 0] }));
-      if (r[C.tit] === 1 || r[C.tit] === 2) { m[r[C.tit]][0] += r[C.cp1]; m[r[C.tit]][1] += r[C.cp2]; m[r[C.tit]][2] += r[C.cp3]; }
-    }
-    // registro programmi colpiti
-    S.progs = new Map();
-    for (const r of S.al) {
-      if (r.liv !== "programma") continue;
-      const [u1, u2] = r.cod.split(".").map(Number);
-      const key = r.min + "|" + u1 + "|" + u2;
-      let p = S.progs.get(key);
-      if (!p) {
-        const b = S.base.get(key);
-        p = { key, min: r.min, cod: r.cod, u1, u2, prg: b ? cap(b.prg.replace(/^\d+ /, "")) : r.prg, mis: b ? b.mis : (r.cmis.padStart(3, "0") + " " + r.mis), a5: null, a6: null, a7: null, base: b };
-        S.progs.set(key, p);
+    const r = await fetch("data/ddl.json");
+    if (!r.ok) throw new Error("data/ddl.json");
+    const d = await r.json();
+    D.min = d.ministeri; D.minBy = Object.fromEntries(d.ministeri.map((m) => [m.k, m]));
+    D.al = d.allegati; D.a1 = d.allegato1; D.art = d.articoli; D.artBy = Object.fromEntries(d.articoli.map((a) => [a.n, a]));
+    D.tot = {}; D.minAl = {}; D.progs = new Map(); D.mis = new Map();
+    for (const r of D.al) {
+      if (r.liv === "totale") D.tot[r.a] = r;
+      if (r.liv === "ministero") (D.minAl[r.min] || (D.minAl[r.min] = {}))["a" + r.a] = r;
+      if (r.liv === "programma") {
+        const key = r.min + "/" + r.cod;
+        let p = D.progs.get(key);
+        if (!p) { p = { key, min: r.min, cod: r.cod, prg: r.prg, mis: r.mis, cmis: r.cmis }; D.progs.set(key, p); }
+        p["a" + r.a] = r;
+        let m = D.mis.get(r.cmis);
+        if (!m) { m = { k: r.cmis, nome: r.mis, progs: new Set() }; D.mis.set(r.cmis, m); }
+        m.progs.add(key);
       }
-      p["a" + r.a] = r;
     }
-    S.tot = {};
-    for (const r of S.al) if (r.liv === "totale") S.tot[r.a] = r;
+    for (const a of D.art) a._s = null; // indice di ricerca costruito su richiesta
   }
 
-  // ---------- tooltip ----------
-  const tip = () => $("#tip");
-  document.addEventListener("mousemove", (e) => {
-    const t = e.target.closest && e.target.closest("[data-tip]");
-    const el = tip();
-    if (!t) { el.hidden = true; return; }
-    el.innerHTML = t.getAttribute("data-tip");
-    el.hidden = false;
-    const w = el.offsetWidth, h = el.offsetHeight;
-    el.style.left = Math.min(e.clientX + 14, innerWidth - w - 8) + "px";
-    el.style.top = Math.min(e.clientY + 14, innerHeight - h - 8) + "px";
-  });
+  // profilo annuo 2027-2032 di un insieme di righe programma (o ministero)
+  const YEARS = ["2027", "2028", "2029", "2030", "2031", "2032"];
+  function profile(list) {
+    const t2 = [0, 0, 0, 0, 0, 0], t1 = [0, 0, 0, 0, 0, 0], inc = [0, 0, 0, 0, 0, 0], p2 = [0, 0, 0], p1 = [0, 0, 0];
+    for (const x of list) {
+      if (x.a5) x.a5.v.forEach((v, i) => { t2[i] += v; p2[i] += x.a5.p[i]; });
+      if (x.a7) { x.a7.v.forEach((v, i) => { t1[i] += v; p1[i] += x.a7.p[i]; }); for (let i = 3; i < 6; i++) t1[i] += x.a7.v[2]; }
+      if (x.a6) x.a6.v.forEach((v, i) => (inc[i + 3] += v));
+    }
+    return { t2, t1, inc, p2, p1, cut2: sum(t2), cut1: sum(t1.slice(0, 3)), incT: sum(inc), regime1: t1[2] };
+  }
+  const progsOf = (pred) => [...D.progs.values()].filter(pred);
 
-  // ---------- grafici SVG ----------
-  // barre orizzontali impilate: items [{label, parts:[{v, color, tip}], note}]
-  function hbars(items, { width = 620, labelW = 190, row = 24, max } = {}) {
-    const m = max || Math.max(1, ...items.map((d) => sum(d.parts.map((p) => p.v))));
-    const plotW = width - labelW - 90, h = items.length * row + 6;
-    let s = `<svg viewBox="0 0 ${width} ${h}" role="img">`;
+  // ---------------- grafici SVG ----------------
+  function chartProfile(pf, { h = 280 } = {}) {
+    const W = 680, top = 26, bot = 46, left = 8, right = 8;
+    const pos = Math.max(1, ...pf.inc), neg = Math.max(1, ...YEARS.map((_, i) => -(pf.t2[i] + pf.t1[i])));
+    const span = h - top - bot, zero = top + span * (pos / (pos + neg));
+    const sc = span / (pos + neg), bw = (W - left - right) / YEARS.length, w = Math.min(64, bw * 0.56);
+    let s = `<svg viewBox="0 0 ${W} ${h}" role="img" aria-label="Profilo annuo delle variazioni">`;
+    s += `<line x1="0" x2="${W}" y1="${zero}" y2="${zero}" stroke="currentColor" stroke-opacity=".2"/>`;
+    YEARS.forEach((y, i) => {
+      const cx = left + bw * i + bw / 2, x = cx - w / 2;
+      let yy = zero;
+      const parts = [
+        { v: -pf.t2[i], c: "var(--cut)", tip: `Titolo II (all. 5), ${y}: <b>${eur(pf.t2[i])}</b>${i < 3 ? `<br>di cui predeterminate per legge: ${eur(pf.p2[i])}` : ""}` },
+        { v: -pf.t1[i], c: "var(--t1)", o: i > 2 ? 0.45 : 1, tip: i > 2 ? `Titolo I (all. 7): <b>${eur(pf.t1[i])}</b><br>riduzione disposta a decorrere dal 2029` : `Titolo I (all. 7), ${y}${i === 2 ? " e successivi" : ""}: <b>${eur(pf.t1[i])}</b><br>di cui predeterminate per legge: ${eur(pf.p1[i])}` },
+      ];
+      for (const p of parts) {
+        if (p.v <= 0) continue;
+        const hh = p.v * sc;
+        s += `<rect class="bar down" x="${x}" y="${yy}" width="${w}" height="${hh}" rx="4" fill="${p.c}" fill-opacity="${p.o || 1}" data-tip="${esc(p.tip)}"/>`;
+        yy += hh;
+      }
+      if (pf.inc[i] > 0) { const hh = pf.inc[i] * sc; s += `<rect class="bar up" x="${x}" y="${zero - hh}" width="${w}" height="${hh}" rx="4" fill="var(--inc)" data-tip="${esc(`Incremento Titolo II (all. 6), ${y}: <b>${eur(pf.inc[i])}</b>`)}"/>`; }
+      const tot = pf.inc[i] + pf.t2[i] + pf.t1[i];
+      const ly = tot >= 0 ? zero - pf.inc[i] * sc - 8 : yy + 16;
+      if (tot) s += `<text class="val" x="${cx}" y="${Math.max(12, Math.min(h - bot + 4, ly))}" text-anchor="middle">${esc(eurS(tot))}</text>`;
+      s += `<text x="${cx}" y="${h - 8}" text-anchor="middle">${y}</text>`;
+    });
+    return s + "</svg>";
+  }
+
+  function chartH(items, { W = 680, lab = 210, row = 34 } = {}) {
+    const m = Math.max(1, ...items.map((d) => sum(d.parts.map((p) => p.v))));
+    const pw = W - lab - 110, h = items.length * row;
+    let s = `<svg viewBox="0 0 ${W} ${h}" role="img">`;
     items.forEach((d, i) => {
-      const y = i * row + 3;
-      s += `<text x="${labelW - 8}" y="${y + row / 2 + 1}" text-anchor="end" dominant-baseline="middle">${esc(d.label)}</text>`;
-      let x = labelW;
-      d.parts.forEach((p) => {
-        const w = (p.v / m) * plotW;
-        if (w > 0) s += `<rect x="${x}" y="${y + 4}" width="${Math.max(w, 0.8)}" height="${row - 9}" rx="2" fill="${p.color}" data-tip="${esc(p.tip)}"></rect>`;
+      const y = i * row;
+      s += `<text class="lab" x="${lab - 12}" y="${y + row / 2 + 4}" text-anchor="end">${esc(d.label)}</text>`;
+      let x = lab;
+      for (const p of d.parts) {
+        const w = (p.v / m) * pw;
+        if (w > 0) s += `<rect class="bar h" style="transition-delay:${(i * 0.04).toFixed(2)}s${d.go ? ";cursor:pointer" : ""}" x="${x}" y="${y + 7}" width="${Math.max(w, 1.5)}" height="${row - 14}" rx="5" fill="${p.c}" data-tip="${esc(p.tip)}"${d.go ? ` data-go="${esc(d.go)}"` : ""}/>`;
         x += w;
-      });
-      s += `<text x="${x + 6}" y="${y + row / 2 + 1}" dominant-baseline="middle" class="ax">${esc(d.note || "")}</text>`;
+      }
+      s += `<text class="val" x="${x + 10}" y="${y + row / 2 + 4}">${esc(d.note || "")}</text>`;
     });
     return s + "</svg>";
   }
 
-  // barre divergenti: items [{label, neg, pos, tipN, tipP}]
-  function divbars(items, { width = 620, labelW = 190, row = 24 } = {}) {
-    const m = Math.max(1, ...items.map((d) => Math.max(Math.abs(d.neg), d.pos)));
-    const half = (width - labelW - 20) / 2, cx = labelW + half, h = items.length * row + 6;
-    let s = `<svg viewBox="0 0 ${width} ${h}" role="img"><line x1="${cx}" x2="${cx}" y1="0" y2="${h}" stroke="#9aa7b4"/>`;
+  function chartDiv(items, { W = 680, lab = 210, row = 34 } = {}) {
+    const m = Math.max(1, ...items.map((d) => Math.max(d.neg, d.pos)));
+    const half = (W - lab - 16) / 2, cx = lab + half, h = items.length * row;
+    let s = `<svg viewBox="0 0 ${W} ${h}" role="img"><line x1="${cx}" x2="${cx}" y1="0" y2="${h}" stroke="currentColor" stroke-opacity=".25"/>`;
     items.forEach((d, i) => {
-      const y = i * row + 3, wn = (Math.abs(d.neg) / m) * half, wp = (d.pos / m) * half;
-      s += `<text x="${labelW - 8}" y="${y + row / 2 + 1}" text-anchor="end" dominant-baseline="middle">${esc(d.label)}</text>`;
-      if (wn > 0) s += `<rect x="${cx - wn}" y="${y + 4}" width="${wn}" height="${row - 9}" rx="2" fill="var(--cut)" data-tip="${esc(d.tipN)}"></rect>`;
-      if (wp > 0) s += `<rect x="${cx}" y="${y + 4}" width="${wp}" height="${row - 9}" rx="2" fill="var(--inc)" data-tip="${esc(d.tipP)}"></rect>`;
+      const y = i * row, wn = (d.neg / m) * half, wp = (d.pos / m) * half, dl = `transition-delay:${(i * 0.04).toFixed(2)}s`;
+      s += `<text class="lab" x="${lab - 12}" y="${y + row / 2 + 4}" text-anchor="end">${esc(d.label)}</text>`;
+      if (wn > 0) s += `<rect class="bar hl" style="${dl}" x="${cx - wn}" y="${y + 7}" width="${wn}" height="${row - 14}" rx="5" fill="var(--cut)" data-tip="${esc(d.tn)}"/>`;
+      if (wp > 0) s += `<rect class="bar h" style="${dl}" x="${cx}" y="${y + 7}" width="${wp}" height="${row - 14}" rx="5" fill="var(--inc)" data-tip="${esc(d.tp)}"/>`;
     });
     return s + "</svg>";
   }
 
-  // ---------- aggregazioni allegati ----------
-  function minRows(a) { return S.al.filter((r) => r.a === a && r.liv === "ministero"); }
-  function byMin() {
-    const m = new Map();
-    for (const a of ["5", "6", "7"]) for (const r of minRows(a)) {
-      let o = m.get(r.min); if (!o) m.set(r.min, (o = { min: r.min }));
-      o["a" + a] = r;
-    }
-    return [...m.values()];
-  }
-  const v = (r, i) => (r ? r.v[i] : 0);
-  const p = (r, i) => (r ? r.p[i] : 0);
-
-  // ---------- viste ----------
-  const views = {};
-
-  views.panoramica = () => {
-    const y = state.pano.year, years = ["2027", "2028", "2029"];
-    const t5 = S.tot["5"], t6 = S.tot["6"], t7 = S.tot["7"];
-    const cut5 = sum(t5.v), inc6 = sum(t6.v), cut7 = sum(t7.v);
-    const pred = (sum(t5.p) + sum(t7.p)) / (cut5 + cut7);
-    const mins = byMin();
-    const items = mins.map((o) => {
-      const c2 = -v(o.a5, y), c1 = -v(o.a7, y);
-      const b = S.baseMin.get(o.min), byi = y < 2 ? y + 1 : null; // LB 2026: idx1=2027, idx2=2028
-      const den = b && byi != null ? b[1][byi] + b[2][byi] : null;
-      return { o, label: minShort(o.min), tot: c1 + c2, den,
-        parts: [
-          { v: c2, color: "var(--cut)", tip: `<b>${esc(cap(o.min))}</b><br>Titolo II (all. 5), ${years[y]}: ${fMl(c2)}<br>di cui predeterminate per legge: ${fMl(-p(o.a5, y))}` },
-          { v: c1, color: "var(--tit1)", tip: `<b>${esc(cap(o.min))}</b><br>Titolo I (all. 7), ${years[y]}${y === 2 ? " e successivi" : ""}: ${fMl(c1)}<br>di cui predeterminate per legge: ${fMl(-p(o.a7, y))}` },
-        ] };
-    }).sort((a, b) => b.tot - a.tot);
-    items.forEach((d) => (d.note = fMl(d.tot) + (d.den ? " · " + fP(d.tot / d.den) + " LB" : "")));
-
-    const div = mins.map((o) => ({ label: minShort(o.min), neg: sum(o.a5 ? o.a5.v : [0]), pos: sum(o.a6 ? o.a6.v : [0]),
-      tipN: `<b>${esc(cap(o.min))}</b><br>Riduzioni Titolo II 2027-2029: ${fMl(-sum(o.a5 ? o.a5.v : [0]))}`,
-      tipP: `<b>${esc(cap(o.min))}</b><br>Incrementi Titolo II 2030-2032: ${fMl(sum(o.a6 ? o.a6.v : [0]))}` }))
-      .sort((a, b) => a.neg - b.neg);
-
-    // top programmi
-    const progs = [...S.progs.values()].map((pr) => {
-      const c = -(v(pr.a5, y) + v(pr.a7, y));
-      const byi = y < 2 ? y + 1 : null;
-      const den = pr.base && byi != null ? pr.base.t[1][byi] + pr.base.t[2][byi] : null;
-      return { pr, c, den, share: den ? c / den : null, nonpred: -(v(pr.a5, y) - p(pr.a5, y) + v(pr.a7, y) - p(pr.a7, y)) };
-    }).sort((a, b) => b.c - a.c).slice(0, 15);
-
-    return `
-    <h1>Panoramica della manovra sulla spesa dei Ministeri</h1>
-    <p class="lead">Riduzioni e rimodulazioni disposte dall'art. 135 del DDL di bilancio 2027-2029 (allegati 5, 6 e 7), confrontate con gli stanziamenti di competenza della Legge di bilancio 2026 per gli stessi programmi.</p>
-    <div class="grid g4">
-      <div class="card kpi cut"><div class="l">Riduzioni Titolo II 2027-29</div><div class="v">${fMl(-cut5)}</div><div class="s">All. 5, art. 135 c. 1 · di cui per legge ${fP(sum(t5.p) / cut5)}</div></div>
-      <div class="card kpi inc"><div class="l">Incrementi Titolo II 2030-32</div><div class="v">${fMl(inc6)}</div><div class="s">All. 6 · reiscrizione del ${fP(inc6 / -cut5)} dei tagli</div></div>
-      <div class="card kpi t1"><div class="l">Riduzioni Titolo I 2027-29+</div><div class="v">${fMl(-cut7)}</div><div class="s">All. 7, art. 135 c. 2 · ${fMl(-t7.v[2])} annui dal 2029</div></div>
-      <div class="card kpi"><div class="l">Quota predeterminata per legge</div><div class="v">${fP(pred)}</div><div class="s">Su riduzioni Titolo I e II 2027-2029</div></div>
-    </div>
-    <div class="grid g2">
-      <div class="card">
-        <h2>Riduzioni per Ministero</h2>
-        <div class="bar-ctl"><span class="seg" data-act="pano-year">${years.map((yy, i) => `<button data-v="${i}" class="${i === y ? "on" : ""}">${yy}</button>`).join("")}</span></div>
-        <div class="legend"><span><i style="background:var(--cut)"></i>Titolo II, conto capitale (all. 5)</span><span><i style="background:var(--tit1)"></i>Titolo I, spese correnti (all. 7)</span></div>
-        <div class="chart">${hbars(items)}</div>
-        <p class="small muted">Percentuale: riduzione sul totale Titolo I+II stanziato per lo stesso anno nella LB 2026 (n.d. per il 2029, fuori dal triennio LB 2026).</p>
-      </div>
-      <div class="card">
-        <h2>Spostamento nel tempo della spesa in conto capitale</h2>
-        <p class="small muted" style="margin-top:-4px">Riduzioni 2027-2029 (all. 5) e incrementi 2030-2032 (all. 6) per Ministero: dove i tagli sono in larga parte reiscritti, si tratta di una rimodulazione temporale, non di un definanziamento.</p>
-        <div class="legend"><span><i style="background:var(--cut)"></i>Riduzioni 2027-29</span><span><i style="background:var(--inc)"></i>Incrementi 2030-32</span></div>
-        <div class="chart">${divbars(div)}</div>
-      </div>
-    </div>
-    <div class="card flush">
-      <div class="card-h"><h2>I 15 programmi con le riduzioni maggiori nel ${years[y]}</h2></div>
-      <div class="tbl-wrap"><table>
-        <thead><tr><th>Ministero</th><th>Programma</th><th class="n">Riduzione (mln)</th><th class="n">Non predeterminata (mln)</th><th class="n">LB 2026 Tit. I+II (mln)</th><th class="n">% su LB</th></tr></thead>
-        <tbody>${progs.map((d) => `<tr class="click" data-go="programma/${encodeURIComponent(d.pr.key)}"><td>${esc(minShort(d.pr.min))}</td><td>${esc(d.pr.cod)} ${esc(d.pr.prg)}</td><td class="n neg">${fM(-d.c)}</td><td class="n">${fM(d.nonpred)}</td><td class="n">${fM(d.den)}</td><td class="n">${fP(d.share)}</td></tr>`).join("")}</tbody>
-      </table></div>
-      <p class="small muted" style="padding:0 18px">Clic su una riga per aprire l'analisi del programma fino ai piani gestionali.</p>
-    </div>`;
-  };
-
-  views.settori = () => {
-    const st = state.set;
-    // costruzione albero da righe programma
-    const rows = [...S.progs.values()].map((pr) => {
-      const b = pr.base;
-      const misNaz = b ? b.mis : pr.mis;
-      return { pr, minL: pr.min, misMin: pr.min + "|" + pr.u1, misMinL: pr.a5 ? pr.a5.mis : pr.a7 ? pr.a7.mis : pr.a6.mis, misNaz,
-        vals: [v(pr.a5, 0), v(pr.a5, 1), v(pr.a5, 2), v(pr.a7, 0), v(pr.a7, 1), v(pr.a7, 2), sum(pr.a6 ? pr.a6.v : [0])],
-        base27: b ? b.t[1][1] + b.t[2][1] : 0, flex27: b ? b.f[1] : 0 };
-    });
-    const groups = new Map();
-    const add = (path, r) => {
-      let lvl = groups;
-      path.forEach(([id, label], d) => {
-        let g = lvl.get(id);
-        if (!g) { g = { id, label, d, vals: [0, 0, 0, 0, 0, 0, 0], base27: 0, flex27: 0, kids: new Map(), pr: null }; lvl.set(id, g); }
-        r.vals.forEach((x, i) => (g.vals[i] += x));
-        g.base27 += r.base27; g.flex27 += r.flex27;
-        if (d === path.length - 1) g.pr = r.pr;
-        lvl = g.kids;
+  function chartSaldi(mode) {
+    const a = D.a1, W = 680, h = 280, top = 20, bot = 34;
+    const series = [{ k: "saldo_netto", c: "var(--blue)", l: "Saldo netto da finanziare" }, { k: "ricorso_mercato", c: "#a259ff", l: "Ricorso al mercato" }];
+    const m = Math.max(...series.flatMap((s) => a[mode][s.k]));
+    const gw = (W - 20) / 3, bw = Math.min(70, gw * 0.3);
+    let s = `<svg viewBox="0 0 ${W} ${h}" role="img">`;
+    a.anni.forEach((y, i) => {
+      const gx = 10 + gw * i + gw / 2;
+      series.forEach((se, j) => {
+        const v = a[mode][se.k][i], hh = (v / m) * (h - top - bot), x = gx + (j - 1) * (bw + 8) + 4;
+        s += `<rect class="bar up" x="${x}" y="${h - bot - hh}" width="${bw}" height="${hh}" rx="6" fill="${se.c}" data-tip="${esc(`${se.l} (${mode}), ${y}: <b>${nf0.format(v)} mln €</b>`)}"/>`;
+        s += `<text class="val" x="${x + bw / 2}" y="${h - bot - hh - 8}" text-anchor="middle">${nf0.format(v / 1000)} mld</text>`;
       });
-    };
-    for (const r of rows) {
-      const prog = [r.pr.key, r.pr.cod + " " + r.pr.prg];
-      if (st.mode === "ministero") add([["m:" + r.minL, cap(r.minL)], ["mm:" + r.misMin, r.pr.u1 + " " + cap(r.misMinL)], prog], r);
-      else add([["n:" + r.misNaz, cap(r.misNaz.replace(/^0+/, ""))], ["nm:" + r.misNaz + r.minL, cap(r.minL)], prog], r);
-    }
-    const sortKids = (m) => [...m.values()].sort((a, b) => (a.vals[0] + a.vals[3]) - (b.vals[0] + b.vals[3]));
-    let html = "";
-    const walk = (list) => list.forEach((g) => {
-      const open = st.open.has(g.id), hasKids = g.kids.size > 0;
-      const tot27 = g.vals[0] + g.vals[3];
-      html += `<tr class="l${g.d} click" data-${hasKids ? "tog" : "go"}="${hasKids ? esc(g.id) : "programma/" + encodeURIComponent(g.id)}">
-        <td>${hasKids ? `<span class="tw">${open ? "▾" : "▸"}</span>` : `<span class="tw">›</span>`}${esc(g.label)}</td>
-        ${g.vals.map((x, i) => `<td class="n ${sgn(x)}">${x ? fM(x) : "-"}</td>`).join("")}
-        <td class="n">${fM(g.base27)}</td><td class="n">${g.base27 ? fP(-tot27 / g.base27) : "n.d."}</td><td class="n">${g.flex27 ? fP(-tot27 / g.flex27) : "n.d."}</td></tr>`;
-      if (open && hasKids) walk(sortKids(g.kids));
+      s += `<text x="${gx}" y="${h - 8}" text-anchor="middle">${y}</text>`;
     });
-    walk(sortKids(groups));
-    return `
-    <h1>Riduzioni e variazioni per settore</h1>
-    <p class="lead">Articolazione degli allegati 5, 6 e 7 per Ministero, missione e programma, oppure per missione (settore di spesa trasversale ai Ministeri). Importi in milioni di euro; le riduzioni sono negative.</p>
-    <div class="card flush">
-      <div class="card-h bar-ctl">
-        <label>Raggruppa per <span class="seg" data-act="set-mode"><button data-v="ministero" class="${st.mode === "ministero" ? "on" : ""}">Ministero</button><button data-v="missione" class="${st.mode === "missione" ? "on" : ""}">Missione (settore)</button></span></label>
-        <button class="btn ghost" data-act="set-all">Espandi / comprimi tutto</button>
-        <button class="btn ghost" data-act="set-csv">Esporta CSV</button>
-      </div>
-      <div class="tbl-wrap"><table>
-        <thead><tr><th rowspan="2">${st.mode === "ministero" ? "Ministero / Missione / Programma" : "Missione / Ministero / Programma"}</th>
-        <th class="n" colspan="3"><span class="tag a5">All. 5</span> Titolo II</th><th class="n" colspan="3"><span class="tag a7">All. 7</span> Titolo I</th><th class="n"><span class="tag a6">All. 6</span></th><th class="n" colspan="3">Peso della riduzione 2027</th></tr>
-        <tr><th class="n">2027</th><th class="n">2028</th><th class="n">2029</th><th class="n">2027</th><th class="n">2028</th><th class="n">2029+</th><th class="n">2030-32</th><th class="n">LB 2026 per il 2027</th><th class="n" title="Riduzione 2027 su stanziamento Titolo I+II">% totale</th><th class="n" title="Riduzione 2027 su stanziamento escluse le categorie rigide per natura">% spesa non rigida</th></tr></thead>
-        <tbody>${html}</tbody></table></div>
-    </div>`;
-  };
-
-  // ---------- analisi programma con simulatore ----------
-  function pgRowsFor(pr, tit) {
-    const C = S.lbC, D = S.lb.dict;
-    return S.lb.rows.filter((r) => D[r[C.amm]] === pr.min && r[C.udv1] === pr.u1 && r[C.udv2] === pr.u2 && r[C.tit] === tit);
+    return s + "</svg>";
   }
-  const rigid = (cat) => S.meta.cat_rigide.includes(String(cat));
 
-  views.programma = (arg) => {
-    const st = state.prog;
-    if (arg) { const k = decodeURIComponent(arg); if (k !== st.key) { st.key = k; st.cuts = null; st.inc = null; const pr0 = S.progs.get(k); if (pr0) st.tit = pr0.a5 ? 2 : 1; } }
-    const list = [...S.progs.values()].sort((a, b) => (a.min + a.u1 * 100 + a.u2).localeCompare(b.min + b.u1 * 100 + b.u2));
-    if (!st.key || !S.progs.get(st.key)) st.key = list.slice().sort((a, b) => (v(a.a5, 0) + v(a.a7, 0)) - (v(b.a5, 0) + v(b.a7, 0)))[0].key;
-    const pr = S.progs.get(st.key);
-    const years = ["2027", "2028"], yi = st.yi, lbi = yi + 1;
-    const all = st.tit === 2 ? pr.a5 : pr.a7;
-    const target = all ? -(all.v[yi] - (st.net ? all.p[yi] : 0)) : 0;
-    const rows = pgRowsFor(pr, st.tit);
-    const C = S.lbC, D = S.lb.dict;
-    const amt = (r) => r[C["cp" + (lbi + 1)]];
-    const pgs = rows.map((r, i) => ({ i, r, a: amt(r), rig: rigid(r[C.cat]) })).filter((x) => x.a !== 0).sort((a, b) => b.a - a.a);
-    if (!st.inc || st.inc.length !== pgs.length) { st.inc = pgs.map((x) => !x.rig); st.cuts = null; }
-    if (!st.cuts) st.cuts = prorata(pgs, st.inc, target);
-    const assigned = sum(st.cuts), base = sum(pgs.map((x) => x.a)), baseInc = sum(pgs.filter((x, i) => st.inc[i]).map((x) => x.a));
-    const residuo = target - assigned;
-    const opts = list.map((x) => `<option value="${esc(x.key)}" ${x.key === pr.key ? "selected" : ""}>${esc(minShort(x.min))} · ${esc(x.cod)} ${esc(x.prg.slice(0, 80))}</option>`).join("");
+  const legendProfile = `<div class="legend"><span><i style="background:var(--cut)"></i>Riduzioni Titolo II, conto capitale (all. 5)</span><span><i style="background:var(--t1)"></i>Riduzioni Titolo I, spese correnti (all. 7)</span><span><i style="background:var(--inc)"></i>Incrementi Titolo II (all. 6)</span></div>`;
 
-    const card = (a, lab, cls, yrs) => !a ? `<div class="card kpi ${cls}"><div class="l">${lab}</div><div class="v muted">-</div><div class="s">Programma non presente</div></div>` :
-      `<div class="card kpi ${cls}"><div class="l">${lab}</div><div class="v">${fMl(sum(a.v))}</div><div class="s">${a.v.map((x, i) => `${yrs[i]}: ${fM(x)}`).join(" · ")} mln<br>di cui per legge: ${a.p.map((x) => fM(x)).join(" · ")}</div></div>`;
-    const b = pr.base;
-    const baseTbl = b ? `<table><thead><tr><th>LB 2026 competenza (mln)</th><th class="n">2026</th><th class="n">2027</th><th class="n">2028</th></tr></thead><tbody>
-      <tr><td>Titolo I, spese correnti</td>${b.t[1].map((x) => `<td class="n">${fM(x)}</td>`).join("")}</tr>
-      <tr><td>Titolo II, conto capitale</td>${b.t[2].map((x) => `<td class="n">${fM(x)}</td>`).join("")}</tr>
-      <tr><td>Riduzione su Titolo II (all. 5)</td><td class="n">-</td><td class="n">${pr.a5 ? fP(-pr.a5.v[0] / b.t[2][1]) : "-"}</td><td class="n">${pr.a5 ? fP(-pr.a5.v[1] / b.t[2][2]) : "-"}</td></tr>
-      <tr><td>Riduzione su Titolo I (all. 7)</td><td class="n">-</td><td class="n">${pr.a7 ? fP(-pr.a7.v[0] / b.t[1][1]) : "-"}</td><td class="n">${pr.a7 ? fP(-pr.a7.v[1] / b.t[1][2]) : "-"}</td></tr>
-      </tbody></table>` : `<p class="muted">Programma non trovato nella LB 2026 (possibile nuova articolazione).</p>`;
-
-    const trs = pgs.map((x, i) => {
-      const r = x.r, c = st.cuts[i] || 0, nu = x.a - c;
-      return `<tr>
-        <td><input type="checkbox" data-act="sim-inc" data-i="${i}" ${st.inc[i] ? "checked" : ""}></td>
-        <td class="n">${r[C.cap]}/${r[C.pg]}</td>
-        <td><div>${esc(cap(D[r[C.pgd]]))}</div>${D[r[C.capd]] !== D[r[C.pgd]] ? `<div class="small muted">Cap.: ${esc(cap(D[r[C.capd]]).slice(0, 140))}</div>` : ""}<div class="small muted">${esc(D[r[C.az]])} · ${esc(cap(D[r[C.cdr]]))}</div></td>
-        <td><span class="small">${esc(cap(S.meta.categorie[r[C.cat]] || r[C.cat]))}</span> ${x.rig ? `<span class="tag rig" title="Categoria considerata rigida per natura">rigida</span>` : ""}</td>
-        <td class="n">${fE(x.a)}</td>
-        <td class="n"><input type="number" step="1000" data-act="sim-cut" data-i="${i}" value="${Math.round(c)}"></td>
-        <td class="n">${fE(nu)}</td>
-        <td class="n ${c > 0 ? "neg" : ""}">${x.a ? fP(-c / x.a) : "-"}</td></tr>`;
-    }).join("");
-
-    return `
-    <h1>Analisi del programma</h1>
-    <p class="lead">Impatto delle riduzioni sul programma e simulazione della loro ripartizione sui piani gestionali, a partire dagli stanziamenti della LB 2026 per lo stesso anno. Utile per valutare la sostenibilità del taglio e le eventuali rimodulazioni tra programmi consentite dall'art. 135 (decreto MEF su proposta dei Ministri).</p>
-    <div class="card bar-ctl"><label style="flex:1">Programma <select data-act="prog-sel" style="width:100%">${opts}</select></label></div>
-    <h2>${esc(cap(pr.min))}</h2>
-    <p class="muted" style="margin-top:-6px">Missione ${esc(cap(pr.mis.replace(/^0+/, "")))} · Programma ${esc(pr.cod)} ${esc(pr.prg)}</p>
-    <div class="grid g3">
-      ${card(pr.a5, "All. 5 · riduzioni Titolo II", "cut", ["2027", "2028", "2029"])}
-      ${card(pr.a7, "All. 7 · riduzioni Titolo I", "t1", ["2027", "2028", "2029+"])}
-      ${card(pr.a6, "All. 6 · incrementi Titolo II", "inc", ["2030", "2031", "2032"])}
-    </div>
-    <div class="card"><div class="tbl-wrap">${baseTbl}</div></div>
-    <div class="card flush">
-      <div class="card-h">
-        <h2>Simulatore di ripartizione sui piani gestionali</h2>
-        <div class="bar-ctl">
-          <label>Titolo <span class="seg" data-act="sim-tit"><button data-v="2" class="${st.tit === 2 ? "on" : ""}">II (all. 5)</button><button data-v="1" class="${st.tit === 1 ? "on" : ""}">I (all. 7)</button></span></label>
-          <label>Anno <span class="seg" data-act="sim-year">${years.map((y, i) => `<button data-v="${i}" class="${i === yi ? "on" : ""}">${y}</button>`).join("")}</span></label>
-          <label><input type="checkbox" data-act="sim-net" ${st.net ? "checked" : ""}> Escludi la quota predeterminata per legge</label>
-          <button class="btn" data-act="sim-pro">Ripartisci pro quota sui PG selezionati</button>
-          <button class="btn ghost" data-act="sim-zero">Azzera</button>
-          <button class="btn ghost" data-act="sim-csv">Esporta CSV</button>
-        </div>
-        <div class="sim-sum">
-          <span>Riduzione da ripartire: <b class="neg">${fE(target)}</b></span>
-          <span>Assegnata: <b>${fE(assigned)}</b></span>
-          <span>Residuo: <b class="${Math.abs(residuo) > 1 ? "neg" : "pos"}">${fE(residuo)}</b></span>
-          <span>Stanziamento LB ${years[yi]} del titolo: <b>${fE(base)}</b> (${fP(target / base)})</span>
-          <span>PG selezionati: <b>${fE(baseInc)}</b> (${fP(target / baseInc)})</span>
-        </div>
-        ${!all ? `<div class="callout warn">Il programma non ha riduzioni sul Titolo ${st.tit === 2 ? "II" : "I"}: si può comunque usare la tabella per vedere la composizione per piano gestionale.</div>` : ""}
-        ${target > baseInc && all ? `<div class="callout warn">La riduzione supera lo stanziamento dei PG selezionati: includere altri piani gestionali o valutare una rimodulazione verso altri programmi.</div>` : ""}
-      </div>
-      <div class="tbl-wrap"><table>
-        <thead><tr><th title="Includi nel riparto">Incl.</th><th class="n">Cap./PG</th><th>Piano gestionale</th><th>Categoria economica</th><th class="n">LB ${years[yi]}</th><th class="n">Riduzione simulata</th><th class="n">Nuovo stanziamento</th><th class="n">Var. %</th></tr></thead>
-        <tbody>${trs || `<tr><td colspan="8" class="muted">Nessun piano gestionale con stanziamento per questo titolo e anno.</td></tr>`}</tbody>
-      </table></div>
-      <p class="small muted" style="padding:0 18px">Pre-selezione: sono esclusi i PG di categorie economiche rigide per natura (redditi da lavoro, imposte sulla produzione, risorse UE, interessi, rimborsi, rimborso passività). È un'euristica: la rimodulabilità effettiva dipende dalla natura della spesa (oneri inderogabili, fattore legislativo, fabbisogno) da verificare sul capitolo.</p>
-    </div>`;
-  };
-
-  function prorata(pgs, inc, target) {
-    const tot = sum(pgs.map((x, i) => (inc[i] ? x.a : 0)));
-    if (!tot || !target) return pgs.map(() => 0);
-    let out = pgs.map((x, i) => (inc[i] ? Math.round((target * x.a) / tot) : 0));
-    const diff = target - sum(out); // arrotondamenti sul PG maggiore incluso
-    const k = inc.findIndex((b) => b); if (k >= 0) out[k] += diff;
+  // ---------------- ricerca negli articoli ----------------
+  const STOP = new Set("della delle dello degli dei del di da in con per tra fra sul sulla sui nelle nella negli nei alla alle allo agli ai al e ed o a il lo la le gli un una uno che non piu altri altre altro loro anche come dal dai dalle dalla".split(" "));
+  function artIndex(a) {
+    if (!a._s) a._s = { r: fold(a.rubrica), t: fold(a.commi.join(" ")), rt: fold((a.rt || []).map((b) => b.s).join(" ")) };
+    return a._s;
+  }
+  function terms(q) { return fold(q).split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP.has(w)); }
+  const count = (s, w) => { let n = 0, i = 0; while ((i = s.indexOf(w, i)) !== -1) { n++; i += w.length; } return n; };
+  function searchArts(q) {
+    const ws = terms(q);
+    if (!ws.length) return [];
+    return D.art.map((a) => {
+      const x = artIndex(a);
+      let score = 0;
+      for (const w of ws) {
+        const r = count(x.r, w), t = count(x.t, w), rt = count(x.rt, w);
+        if (!r && !t && !rt) return null;
+        score += r * 10 + t * 2 + rt;
+      }
+      return { a, score };
+    }).filter(Boolean).sort((p, q2) => q2.score - p.score).map((x) => x.a);
+  }
+  // parole chiave significative di un nome di missione/programma
+  const GENERIC = new Set("politiche servizi servizio sviluppo tutela interventi intervento sistema sistemi generali generale amministrazioni amministrazione programma attivita gestione supporto settore competenza affari indirizzo politico coordinamento programmazione valorizzazione promozione strutture pubbliche pubblica pubblico materia territorio territoriali nazionale nazionali risorse ambito relative relativi finanziaria finanziarie".split(" "));
+  function keywords(...names) {
+    const out = [];
+    for (const n of names) for (const w of terms(n)) if (w.length >= 5 && !GENERIC.has(w)) { const st = w.slice(0, Math.min(w.length, 7)); if (!out.includes(st)) out.push(st); }
     return out;
   }
-
-  // ---------- esplora piani gestionali ----------
-  function pgFiltered() {
-    const st = state.pg, C = S.lbC, D = S.lb.dict;
-    const q = st.q.trim().toLowerCase();
-    let rows = S.lb.rows.filter((r) =>
-      (!st.amm || D[r[C.amm]] === st.amm) && (!st.tit || r[C.tit] === +st.tit) && (!st.cat || r[C.cat] === +st.cat) &&
-      (!st.only || S.progs.has(D[r[C.amm]] + "|" + r[C.udv1] + "|" + r[C.udv2])) &&
-      (!q || (D[r[C.pgd]] + " " + D[r[C.capd]] + " " + D[r[C.prg]] + " " + D[r[C.az]] + " " + r[C.cap]).toLowerCase().includes(q)));
-    const key = { cp2: (r) => -r[C.cp2], dneg: (r) => r[C.cp3] - r[C.cp1], dpos: (r) => -(r[C.cp3] - r[C.cp1]) }[st.sort];
-    return rows.sort((a, b) => key(a) - key(b));
+  function relatedArts(kws, minK) {
+    const res = [];
+    for (const a of D.art) {
+      if (a.sezione === "II") continue;
+      const x = artIndex(a);
+      let r = 0, t = 0;
+      for (const k of kws) { r += count(x.r, k); t += count(x.t, k); }
+      const cites = minK ? (a.ministeri[minK] || 0) : 0;
+      if (r > 0 || t >= 3 || (cites && t >= 1)) res.push({ a, score: r * 10 + t + cites * 2 });
+    }
+    return res.sort((p, q) => q.score - p.score).map((x) => x.a);
   }
-  views.pg = () => {
-    const st = state.pg, C = S.lbC, D = S.lb.dict;
-    const rows = pgFiltered(), per = 100, pages = Math.max(1, Math.ceil(rows.length / per));
-    if (st.page >= pages) st.page = 0;
-    const pageRows = rows.slice(st.page * per, st.page * per + per);
-    const tot = [C.cp1, C.cp2, C.cp3].map((c) => sum(rows.map((r) => r[c])));
-    const amms = [...new Set(S.lb.rows.map((r) => D[r[C.amm]]))].sort();
-    const cats = Object.entries(S.meta.categorie).sort((a, b) => +a[0] - +b[0]);
-    return `
-    <h1>Piani gestionali</h1>
-    <p class="lead">Tutti i ${fE(S.lb.rows.length)} piani gestionali di spesa della Legge di bilancio 2026-2028 (BDAP). L'andamento 2026-2028 a legislazione vigente mostra dove le risorse sono già in calo prima della manovra: ordinare per "calo 2026-2028" per individuare i definanziamenti già scritti in bilancio.</p>
-    <div class="card bar-ctl">
-      <input type="search" placeholder="Cerca capitolo, PG, azione, programma..." value="${esc(st.q)}" data-act="pg-q">
-      <select data-act="pg-amm"><option value="">Tutte le amministrazioni</option>${amms.map((a) => `<option ${a === st.amm ? "selected" : ""} value="${esc(a)}">${esc(minShort(a))}</option>`).join("")}</select>
-      <select data-act="pg-tit"><option value="">Tutti i titoli</option>${[1, 2, 3].map((t) => `<option ${String(t) === String(st.tit) ? "selected" : ""} value="${t}">Titolo ${["I", "II", "III"][t - 1]}</option>`).join("")}</select>
-      <select data-act="pg-cat"><option value="">Tutte le categorie</option>${cats.map(([k, d]) => `<option ${k === String(st.cat) ? "selected" : ""} value="${k}">${k} ${esc(cap(d))}</option>`).join("")}</select>
-      <select data-act="pg-sort"><option value="cp2" ${st.sort === "cp2" ? "selected" : ""}>Ordina per stanziamento 2027</option><option value="dneg" ${st.sort === "dneg" ? "selected" : ""}>Ordina per calo 2026-2028</option><option value="dpos" ${st.sort === "dpos" ? "selected" : ""}>Ordina per aumento 2026-2028</option></select>
-      <label><input type="checkbox" data-act="pg-only" ${st.only ? "checked" : ""}> Solo programmi colpiti dagli allegati</label>
-      <button class="btn ghost" data-act="pg-csv">Esporta CSV</button>
-    </div>
-    <div class="card flush">
-      <div class="pager">${fE(rows.length)} PG · totale 2026 ${fMl(tot[0])} · 2027 ${fMl(tot[1])} · 2028 ${fMl(tot[2])}
-        <span style="margin-left:auto"></span>
-        <button class="btn ghost" data-act="pg-page" data-v="-1" ${st.page === 0 ? "disabled" : ""}>‹</button> pag. ${st.page + 1} / ${pages} <button class="btn ghost" data-act="pg-page" data-v="1" ${st.page >= pages - 1 ? "disabled" : ""}>›</button></div>
-      <div class="tbl-wrap"><table>
-        <thead><tr><th>Amministrazione / Programma</th><th class="n">Cap./PG</th><th>Piano gestionale</th><th>Cat.</th><th class="n">2026</th><th class="n">2027</th><th class="n">2028</th><th class="n">Var. 2028/2026</th></tr></thead>
-        <tbody>${pageRows.map((r) => {
-          const d = r[C.cp3] - r[C.cp1], k = D[r[C.amm]] + "|" + r[C.udv1] + "|" + r[C.udv2], hit = S.progs.has(k);
-          return `<tr><td><div>${esc(minShort(D[r[C.amm]]))}</div><div class="small muted">${hit ? `<a href="#programma/${encodeURIComponent(k)}">${esc(D[r[C.prg]])}</a>` : esc(D[r[C.prg]])}</div></td>
-          <td class="n">${r[C.cap]}/${r[C.pg]}</td><td><div>${esc(cap(D[r[C.pgd]]).slice(0, 220))}</div>${D[r[C.capd]] !== D[r[C.pgd]] ? `<div class="small muted">${esc(cap(D[r[C.capd]]).slice(0, 120))}</div>` : ""}</td>
-          <td class="small">${r[C.cat]} ${rigid(r[C.cat]) ? `<span class="tag rig">rigida</span>` : ""}</td>
-          <td class="n">${fE(r[C.cp1])}</td><td class="n">${fE(r[C.cp2])}</td><td class="n">${fE(r[C.cp3])}</td>
-          <td class="n ${sgn(d)}">${r[C.cp1] ? fP(d / r[C.cp1]) : d ? "nuovo" : "-"}</td></tr>`;
-        }).join("")}</tbody></table></div>
-    </div>`;
+
+  // ---------------- componenti ----------------
+  function artCard(a, extra = "") {
+    const cites = Object.keys(a.ministeri || {}).length;
+    return `<button class="art reveal" data-art="${a.n}">
+      <span class="a-n">Articolo ${a.n}</span>
+      <span class="a-t">${esc(a.rubrica)}</span>
+      <span class="a-m">${a.importi.length ? `<span class="badge">${a.importi.length} ${a.importi.length === 1 ? "comma" : "commi"} con importi</span>` : ""}${a.rt ? `<span class="badge g">Relazione tecnica</span>` : ""}${a.n === 135 ? `<span class="badge r">Fonte delle riduzioni</span>` : ""}${extra}</span>
+    </button>`;
+  }
+  function artGrid(list, limit = 8, id = "arts") {
+    if (!list.length) return `<p class="empty">Nessun articolo trovato.</p>`;
+    const shown = list.slice(0, limit);
+    return `<div class="arts" id="${id}">${shown.map((a) => artCard(a)).join("")}</div>
+      ${list.length > limit ? `<div class="more center"><button class="pill ghost small" data-more="${id}" data-list="${list.map((a) => a.n).join(",")}">Mostra tutti i ${list.length} articoli</button></div>` : ""}`;
+  }
+  function progCard(p) {
+    const pf = profile([p]);
+    return `<button class="prog reveal" data-go="#/programma/${enc(p.min)}/${enc(p.cod)}">
+      <span class="p-e">${esc(D.minBy[p.min].breve)} · Programma ${esc(p.cod)}</span>
+      <span class="p-t">${esc(p.prg)}</span>
+      <span class="p-n">
+        ${pf.cut2 ? `<div><b class="cut">${eurS(pf.cut2)}</b>Titolo II 2027-29</div>` : ""}
+        ${pf.cut1 ? `<div><b class="t1">${eurS(pf.cut1)}</b>Titolo I 2027-29</div>` : ""}
+        ${pf.incT ? `<div><b class="inc">+${eurS(pf.incT)}</b>Titolo II 2030-32</div>` : ""}
+      </span>
+    </button>`;
+  }
+  function progGrid(ps, limit = 8) {
+    return `<div class="progs" id="pg">${ps.slice(0, limit).map(progCard).join("")}</div>${ps.length > limit ? `<div class="more center"><button class="pill ghost small" data-moreprog="${ps.map((p) => p.key).join(",")}">Mostra tutti i ${ps.length} programmi</button></div>` : ""}`;
+  }
+  function statsBlock(pf, nArts) {
+    const st = [];
+    if (pf.cut2) st.push(`<div class="stat reveal"><div class="n cut" data-count="${pf.cut2}">${eurS(pf.cut2)}</div><div class="l">Riduzioni conto capitale 2027-2029 (all. 5)</div></div>`);
+    if (pf.cut1) st.push(`<div class="stat reveal d1"><div class="n t1" data-count="${pf.cut1}">${eurS(pf.cut1)}</div><div class="l">Riduzioni spese correnti 2027-2029 (all. 7), poi ${eurS(pf.regime1)} l'anno</div></div>`);
+    if (pf.incT) st.push(`<div class="stat reveal d2"><div class="n inc" data-count="${pf.incT}" data-sign="+">+${eurS(pf.incT)}</div><div class="l">Reiscrizione in conto capitale 2030-2032 (all. 6)</div></div>`);
+    if (nArts != null) st.push(`<div class="stat reveal d3"><div class="n plain" data-count="${nArts}" data-int="1">${nArts}</div><div class="l">Articoli collegati</div></div>`);
+    return st.length ? `<div class="stats">${st.join("")}</div>` : "";
+  }
+  function numbersTable(list) {
+    const row = (lab, r, cls, yrs) => r ? `<tr><td>${lab}</td>${r.v.map((v, i) => `<td class="n ${cls}">${eur(v)}<div class="tiny muted">per legge: ${eur(r.p[i])}</div></td>`).join("")}<td class="small muted">${yrs}</td></tr>` : "";
+    return `<div class="tbl-wrap"><table><thead><tr><th>Allegato</th><th class="n">1° anno</th><th class="n">2° anno</th><th class="n">3° anno</th><th>Anni</th></tr></thead><tbody>
+      ${list.map((x) => `${list.length > 1 ? `<tr class="lv0"><td colspan="5">${esc(x.label)}</td></tr>` : ""}
+        ${row("All. 5 · riduzioni Titolo II", x.a5, "neg", "2027, 2028, 2029")}
+        ${row("All. 7 · riduzioni Titolo I", x.a7, "neg", "2027, 2028, 2029 e successivi")}
+        ${row("All. 6 · incrementi Titolo II", x.a6, "pos", "2030, 2031, 2032")}`).join("")}
+      </tbody></table></div>`;
+  }
+  const footer = () => `<footer class="foot"><div class="in-w">Fonti: testo del disegno di legge di bilancio 2027-2029 (articoli e allegati 1, 5, 6, 7) e Relazione tecnica. Le tabelle degli allegati 5-7 sono immagini nel PDF: i valori sono stati letti con OCR e verificati con i totali di programma, missione, Ministero e allegato. <a href="#/fonti">Metodo e limiti</a>.</div></footer>`;
+
+  // ---------------- viste ----------------
+  const V = {};
+
+  V.home = () => {
+    const t5 = D.tot["5"], t7 = D.tot["7"];
+    return `<section class="hero">
+      <p class="eyebrow reveal">Disegno di legge di bilancio</p>
+      <h1 class="h-xl reveal d1"><span class="grad">2027-2029.</span><br>Letto da vicino.</h1>
+      <p class="lead reveal d2">${D.art.length} articoli, la Relazione tecnica e ${eurS(-sum(t5.v) - sum(t7.v))} di riduzioni ai Ministeri nel triennio. In una lettura guidata.</p>
+      <div class="ask reveal d3">
+        <div class="ask-q">Ti interessa qualcosa di particolare?</div>
+        <div class="ask-b">
+          <a class="pill primary" href="#/scegli">Sì</a>
+          <a class="pill ghost" href="#/tutto">No, fammi vedere tutto</a>
+        </div>
+      </div>
+    </section>`;
   };
 
-  // ---------- variazioni DLB per PG ----------
-  views.variazioni = () => {
-    const a4 = `<div class="card flush"><div class="card-h"><h2>Allegato 4 (art. 86, c. 4): autorizzazioni di spesa mantenute in bilancio, MIMIT</h2>
-      <p class="small muted">Unico allegato del testo del DDL con dettaglio per capitolo e piano gestionale (riforma del Codice degli incentivi).</p></div>
-      <div class="tbl-wrap"><table><thead><tr><th class="n">Cap./PG</th><th>Piano gestionale</th><th>Autorizzazione</th>${["2027", "2028", "2029", "2030", "2031"].map((y) => `<th class="n">${y}</th>`).join("")}</tr></thead>
-      <tbody>${S.a4.map((r) => `<tr><td class="n">${r.capitolo}/${r.piano_gestionale}</td><td>${esc(cap(r.denominazione_pg))}<div class="small muted">${esc(cap(r.denominazione_capitolo))}</div></td><td class="small">${esc(r.autorizzazione)}</td>${["2027", "2028", "2029", "2030", "2031"].map((y) => `<td class="n">${r[y] ? fE(+r[y]) : "-"}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
-    if (!S.dlb) {
-      return `<h1>Variazioni del DLB per piano gestionale</h1>
-      <div class="callout warn"><b>Dati del DLB 2027-2029 per piano gestionale non ancora disponibili.</b><br>
-      Il testo del DDL (Sezione I) espone le riduzioni solo per Ministero, missione e programma. Il dettaglio per capitolo e piano gestionale, con la scomposizione tra legislazione vigente, rimodulazioni e rifinanziamenti/definanziamenti (Sezione II) ed effetti della Sezione I, è pubblicato da RGS su BDAP Open Data come dataset
-      <i>"2027 - Disegno Legge di Bilancio Presentato Elaborabile Spese Piano di Gestione"</i>. Al momento dell'ultimo aggiornamento non risultava ancora pubblicato.<br><br>
-      Quando sarà disponibile: <code>python scripts/fetch_bdap.py dlb 2027 &amp;&amp; python scripts/build_data.py</code>. Questa pagina mostrerà allora, per ogni PG, dove le risorse vengono spostate e riviste.</div>
-      ${a4}`;
-    }
-    const st = state.var, ds = S.dlb, C = colIndex(ds), D = ds.dict, yrs = S.meta.dlb.anni, k = st.yi + 1;
-    const g = (r, p) => r[C[p + k]] || 0;
-    const q = st.q.trim().toLowerCase();
-    let rows = ds.rows.filter((r) => (!st.amm || D[r[C.amm]] === st.amm) && (!q || (D[r[C.pgd]] + " " + D[r[C.capd]] + " " + D[r[C.prg]] + " " + r[C.cap]).toLowerCase().includes(q)));
-    const varTot = (r) => g(r, "int") - g(r, "lv");
-    const changed = rows.filter((r) => varTot(r) !== 0 || g(r, "rim") !== 0);
-    changed.sort((a, b) => varTot(a) - varTot(b));
-    // aggregato per amministrazione
-    const agg = new Map();
-    for (const r of ds.rows) {
-      const a = D[r[C.amm]]; let o = agg.get(a); if (!o) agg.set(a, (o = { a, rim: 0, rif: 0, s1: 0, lv: 0 }));
-      o.rim += g(r, "rim"); o.rif += g(r, "rif"); o.s1 += g(r, "s1"); o.lv += g(r, "lv");
-    }
-    const ag = [...agg.values()].sort((a, b) => (a.rim + a.rif + a.s1) - (b.rim + b.rif + b.s1));
-    const per = 100, pages = Math.max(1, Math.ceil(changed.length / per)); if (st.page >= pages) st.page = 0;
-    const amms = [...agg.keys()].sort();
-    return `<h1>Variazioni del DLB per piano gestionale</h1>
-    <p class="lead">Fonte: ${esc(S.meta.dlb.file)} (BDAP). Per ogni PG: legislazione vigente, rimodulazioni e rifinanziamenti/definanziamenti/riprogrammazioni (Sezione II), effetti della Sezione I e DLB integrato. Competenza ${yrs[st.yi]}.</p>
-    <div class="card bar-ctl">
-      <label>Anno <span class="seg" data-act="var-year">${yrs.map((y, i) => `<button data-v="${i}" class="${i === st.yi ? "on" : ""}">${y}</button>`).join("")}</span></label>
-      <select data-act="var-amm"><option value="">Tutte le amministrazioni</option>${amms.map((a) => `<option ${a === st.amm ? "selected" : ""} value="${esc(a)}">${esc(minShort(a))}</option>`).join("")}</select>
-      <input type="search" placeholder="Cerca capitolo, PG, programma..." value="${esc(st.q)}" data-act="var-q">
-      <button class="btn ghost" data-act="var-csv">Esporta CSV</button>
-    </div>
-    <div class="card flush"><div class="card-h"><h2>Saldo delle variazioni per amministrazione (mln)</h2></div><div class="tbl-wrap"><table>
-      <thead><tr><th>Amministrazione</th><th class="n">Legisl. vigente</th><th class="n">Rimodulazioni</th><th class="n">Rif./Def./Rip.</th><th class="n">Effetti Sez. I</th><th class="n">Var. totale %</th></tr></thead>
-      <tbody>${ag.map((o) => `<tr class="click" data-act="var-pick" data-v="${esc(o.a)}"><td>${esc(minShort(o.a))}</td><td class="n">${fM(o.lv)}</td><td class="n ${sgn(o.rim)}">${fM(o.rim)}</td><td class="n ${sgn(o.rif)}">${fM(o.rif)}</td><td class="n ${sgn(o.s1)}">${fM(o.s1)}</td><td class="n ${sgn(o.rim + o.rif + o.s1)}">${o.lv ? fP((o.rim + o.rif + o.s1) / o.lv) : "-"}</td></tr>`).join("")}</tbody></table></div></div>
-    <div class="card flush">
-      <div class="pager">${fE(changed.length)} PG con variazioni, ordinati dalla riduzione maggiore<span style="margin-left:auto"></span>
-        <button class="btn ghost" data-act="var-page" data-v="-1" ${st.page === 0 ? "disabled" : ""}>‹</button> pag. ${st.page + 1} / ${pages} <button class="btn ghost" data-act="var-page" data-v="1" ${st.page >= pages - 1 ? "disabled" : ""}>›</button></div>
-      <div class="tbl-wrap"><table><thead><tr><th>Amministrazione / Programma</th><th class="n">Cap./PG</th><th>Piano gestionale</th><th class="n">Legisl. vigente</th><th class="n">Rimodul.</th><th class="n">Rif./Def.</th><th class="n">Sez. I</th><th class="n">DLB integrato</th><th class="n">Var. %</th></tr></thead>
-      <tbody>${changed.slice(st.page * per, st.page * per + per).map((r) => {
-        const d = varTot(r);
-        return `<tr><td><div>${esc(minShort(D[r[C.amm]]))}</div><div class="small muted">${esc(D[r[C.prg]])}</div></td><td class="n">${r[C.cap]}/${r[C.pg]}</td>
-        <td>${esc(cap(D[r[C.pgd]]))}<div class="small muted">${esc(cap(D[r[C.capd]]).slice(0, 110))}</div></td>
-        <td class="n">${fE(g(r, "lv"))}</td><td class="n ${sgn(g(r, "rim"))}">${fE(g(r, "rim"))}</td><td class="n ${sgn(g(r, "rif"))}">${fE(g(r, "rif"))}</td><td class="n ${sgn(g(r, "s1"))}">${fE(g(r, "s1"))}</td><td class="n">${fE(g(r, "int"))}</td>
-        <td class="n ${sgn(d)}">${g(r, "lv") ? fP(d / g(r, "lv")) : "nuovo"}</td></tr>`;
-      }).join("")}</tbody></table></div></div>
-    ${a4}`;
+  V.scegli = () => `<section class="sec"><div class="in-w center">
+      <p class="eyebrow reveal">Esplora</p>
+      <h1 class="h-l reveal d1">Da dove vuoi partire?</h1>
+      <p class="lead reveal d2">Scegli una porta d'ingresso. Ogni strada porta agli articoli e, scorrendo, ai numeri.</p>
+      <div class="tiles">
+        <a class="tile big reveal" href="#/ministeri"><span class="t-ico">${ICO.min}</span><span class="t-h">Ministero</span><span class="t-s">Gli articoli che lo citano, le riduzioni e i programmi coinvolti.</span><span class="arrow">›</span></a>
+        <a class="tile big reveal d1" href="#/missioni"><span class="t-ico">${ICO.mis}</span><span class="t-h">Missione e programma</span><span class="t-s">Un settore di spesa con tutti i suoi programmi, anche tra più Ministeri.</span><span class="arrow">›</span></a>
+        <a class="tile big reveal d2" href="#/argomento"><span class="t-ico">${ICO.arg}</span><span class="t-h">Argomento</span><span class="t-s">Una ricerca libera nel testo della legge e nella Relazione tecnica.</span><span class="arrow">›</span></a>
+      </div>
+    </div></section>${footer()}`;
+
+  V.ministeri = () => {
+    const tiles = D.min.map((m, i) => {
+      const pf = profile(progsOf((p) => p.min === m.k));
+      const n = D.art.filter((a) => a.ministeri[m.k] || a.stato_previsione === m.k).length;
+      const cut = pf.cut1 + pf.cut2;
+      return { m, cut, n, i };
+    }).sort((a, b) => a.cut - b.cut);
+    return `<section class="sec gray"><div class="in-w">
+      <div class="crumbs"><a href="#/scegli">Esplora</a> › Ministero</div>
+      <h1 class="h-l reveal">Scegli un Ministero.</h1>
+      <p class="lead reveal d1">Ordinati per riduzioni complessive 2027-2029 (allegati 5 e 7).</p>
+      <div class="tiles">${tiles.map((t, i) => `<a class="tile reveal d${i % 3}" href="#/ministero/${t.m.k}"><span class="t-h">${esc(t.m.breve)}</span><span class="t-s">${t.n} articoli collegati</span><span class="t-v">${t.cut ? `<span class="neg">${eurS(t.cut)}</span> <small>2027-29</small>` : `<small>Nessuna riduzione art. 135</small>`}</span><span class="arrow">›</span></a>`).join("")}</div>
+    </div></section>${footer()}`;
   };
 
-  // ---------- articolato ----------
-  views.articolato = () => {
-    const st = state.art, q = st.q.trim().toLowerCase();
-    const tits = [...new Set(S.art.map((a) => a.titolo))];
-    const list = S.art.filter((a) => (!st.tit || a.titolo === st.tit) && (!q || (a.rubrica + " " + a.testo).toLowerCase().includes(q)));
-    const hl = (s) => { s = esc(s); if (!q) return s; const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"); return s.replace(re, (m) => `<mark>${m}</mark>`); };
+  V.missioni = () => {
+    const list = [...D.mis.values()].map((m) => {
+      const ps = [...m.progs].map((k) => D.progs.get(k));
+      const pf = profile(ps);
+      return { m, ps, cut: pf.cut1 + pf.cut2, nm: new Set(ps.map((p) => p.min)).size };
+    }).sort((a, b) => a.cut - b.cut);
+    return `<section class="sec gray"><div class="in-w">
+      <div class="crumbs"><a href="#/scegli">Esplora</a> › Missione e programma</div>
+      <h1 class="h-l reveal">Scegli una missione.</h1>
+      <p class="lead reveal d1">Le missioni sono i grandi settori della spesa dello Stato. Aprendone una trovi tutti i programmi interessati dalla manovra.</p>
+      <div class="tiles">${list.map((x, i) => `<a class="tile reveal d${i % 3}" href="#/missione/${x.m.k}"><span class="t-s">Missione ${x.m.k}</span><span class="t-h">${esc(x.m.nome)}</span><span class="t-s">${x.ps.length} programmi · ${x.nm} ${x.nm === 1 ? "Ministero" : "Ministeri"}</span><span class="t-v"><span class="neg">${eurS(x.cut)}</span> <small>2027-29</small></span><span class="arrow">›</span></a>`).join("")}</div>
+    </div></section>${footer()}`;
+  };
+
+  const SUGG = ["sanità", "pensioni", "casa", "energia", "scuola", "università", "imprese", "Forze di polizia", "famiglie", "Regioni", "infrastrutture", "cultura", "giovani", "tabacchi", "Irpef"];
+  V.argomento = (q = "") => {
+    q = dec(q || "");
+    const arts = q ? searchArts(q) : [];
+    const ws = terms(q);
+    const progs = q ? progsOf((p) => ws.some((w) => fold(p.prg + " " + p.mis).includes(w))) : [];
+    return `<section class="sec"><div class="in-n">
+      <div class="crumbs"><a href="#/scegli">Esplora</a> › Argomento</div>
+      <h1 class="h-l reveal">Cerca un argomento.</h1>
+      <p class="lead reveal d1">La ricerca scorre il testo dei ${D.art.length} articoli e la Relazione tecnica.</p>
+      <form class="search reveal d2" id="sform"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="sq" type="search" placeholder="Es. sanità, pensioni, casa" value="${esc(q)}" autocomplete="off" aria-label="Cerca un argomento"></form>
+      <div class="chips reveal d3">${SUGG.map((s) => `<button class="chip ${fold(s) === fold(q) ? "on" : ""}" data-q="${esc(s)}">${esc(s)}</button>`).join("")}</div>
+    </div></section>
+    ${q ? `<section class="sec tight gray"><div class="in-w">
+      <p class="eyebrow">Risultati per "${esc(q)}"</p>
+      <h2 class="h-m reveal">${arts.length} ${arts.length === 1 ? "articolo" : "articoli"}${progs.length ? ` e ${progs.length} ${progs.length === 1 ? "programma" : "programmi"}` : ""}.</h2>
+      ${artGrid(arts, 10)}
+    </div></section>
+    ${progs.length ? `<section class="sec tight"><div class="in-w">
+      <p class="eyebrow">Programmi con questo argomento nel nome</p>
+      <h2 class="h-m reveal">I numeri della manovra.</h2>
+      <div class="card mt reveal chart-wrap"><div class="chart">${chartProfile(profile(progs))}</div>${legendProfile}</div>
+      <div class="progs">${progs.map(progCard).join("")}</div>
+    </div></section>` : ""}` : ""}
+    ${footer()}`;
+  };
+
+  function schedaHeader(eyebrow, title, crumbs) {
+    return `<div class="crumbs">${crumbs}</div><p class="eyebrow reveal">${esc(eyebrow)}</p><h1 class="h-l reveal d1">${esc(title)}</h1>`;
+  }
+
+  V.ministero = (k) => {
+    const m = D.minBy[k];
+    if (!m) return V.ministeri();
+    const ps = progsOf((p) => p.min === k);
+    const pf = profile(ps);
+    const sp = D.art.find((a) => a.stato_previsione === k);
+    const cit = D.art.filter((a) => a.ministeri[k] && a.n !== 135).sort((a, b) => b.ministeri[k] - a.ministeri[k] || a.n - b.n);
+    const arts = [...(ps.length ? [D.artBy[135]] : []), ...(sp ? [sp] : []), ...cit];
+    // per missione
+    const byMis = new Map();
+    for (const p of ps) { const o = byMis.get(p.cmis) || { label: p.mis, list: [] }; o.list.push(p); byMis.set(p.cmis, o); }
+    const misItems = [...byMis.entries()].map(([c, o]) => { const f = profile(o.list); return { label: o.label.length > 34 ? o.label.slice(0, 33) + "…" : o.label, go: `#/missione/${c}`, tot: f.cut1 + f.cut2, parts: [{ v: -f.cut2, c: "var(--cut)", tip: `<b>${esc(o.label)}</b><br>Titolo II 2027-29: ${eur(f.cut2)}` }, { v: -f.cut1, c: "var(--t1)", tip: `<b>${esc(o.label)}</b><br>Titolo I 2027-29: ${eur(f.cut1)}` }] }; }).sort((a, b) => a.tot - b.tot);
+    misItems.forEach((d) => (d.note = eurS(d.tot)));
+    return `<section class="sec"><div class="in-w">
+      ${schedaHeader("Ministero", m.breve, `<a href="#/scegli">Esplora</a> › <a href="#/ministeri">Ministero</a> › ${esc(m.breve)}`)}
+      ${ps.length ? `<p class="lead reveal d2">${ps.length} programmi interessati dalle norme di revisione della spesa (art. 135) e ${arts.length} articoli collegati.</p>` : `<p class="lead reveal d2">Il Ministero non compare negli allegati dell'art. 135. Qui trovi gli articoli che lo riguardano.</p>`}
+      ${statsBlock(pf, arts.length)}
+    </div></section>
+    <section class="sec gray"><div class="in-w">
+      <p class="eyebrow reveal">Gli articoli</p>
+      <h2 class="h-m reveal d1">Cosa dice la legge.</h2>
+      <p class="lead reveal d2 small">Prima l'art. 135 (da cui vengono i numeri)${sp ? " e lo stato di previsione del Ministero" : ""}, poi gli articoli che citano il Ministero, ordinati per numero di citazioni.</p>
+      ${artGrid(arts, 8)}
+    </div></section>
+    ${ps.length ? `<section class="sec"><div class="in-w">
+      <p class="eyebrow reveal">I numeri</p>
+      <h2 class="h-m reveal d1">Riduzioni e reiscrizioni, anno per anno.</h2>
+      <div class="mt">
+        <div class="card reveal"><h3 class="h-s">Profilo 2027-2032</h3>${legendProfile}<div class="chart">${chartProfile(pf)}</div></div>
+        <div class="card reveal mt"><h3 class="h-s">Per missione, 2027-2029</h3><div class="legend"><span><i style="background:var(--cut)"></i>Titolo II</span><span><i style="background:var(--t1)"></i>Titolo I</span></div><div class="chart">${chartH(misItems, { lab: 250 })}</div></div>
+      </div>
+      <div class="card mt reveal"><h3 class="h-s">Il dettaglio dell'allegato</h3>${numbersTable([{ label: m.breve, ...(D.minAl[k] || {}) }])}</div>
+    </div></section>
+    <section class="sec gray"><div class="in-w">
+      <p class="eyebrow reveal">Le schede</p>
+      <h2 class="h-m reveal d1">${ps.length} programmi.</h2>
+      ${progGrid(ps.sort((a, b) => (profile([a]).cut1 + profile([a]).cut2) - (profile([b]).cut1 + profile([b]).cut2)))}
+    </div></section>` : ""}
+    ${footer()}`;
+  };
+
+  V.missione = (c) => {
+    const ms = D.mis.get(c);
+    if (!ms) return V.missioni();
+    const ps = [...ms.progs].map((k) => D.progs.get(k));
+    const pf = profile(ps);
+    const kws = keywords(ms.nome);
+    const arts = [D.artBy[135], ...relatedArts(kws).filter((a) => a.n !== 135)];
+    const mins = [...new Set(ps.map((p) => p.min))];
+    return `<section class="sec"><div class="in-w">
+      ${schedaHeader("Missione " + c, ms.nome, `<a href="#/scegli">Esplora</a> › <a href="#/missioni">Missione</a> › ${esc(ms.nome)}`)}
+      <p class="lead reveal d2">${ps.length} programmi in ${mins.length} ${mins.length === 1 ? "Ministero" : "Ministeri"}: ${mins.map((k) => esc(D.minBy[k].breve)).join(", ")}.</p>
+      ${statsBlock(pf, arts.length)}
+    </div></section>
+    <section class="sec gray"><div class="in-w">
+      <p class="eyebrow reveal">Gli articoli</p>
+      <h2 class="h-m reveal d1">Cosa dice la legge.</h2>
+      <p class="lead reveal d2 small">L'art. 135 dispone le riduzioni. Gli altri articoli sono quelli che contengono le parole chiave della missione: è un collegamento testuale, da verificare leggendo.</p>
+      <div class="chips">${kws.map((k) => `<button class="chip" data-q="${esc(k)}">${esc(k)}…</button>`).join("")}</div>
+      ${artGrid(arts, 8)}
+    </div></section>
+    <section class="sec"><div class="in-w">
+      <p class="eyebrow reveal">I numeri</p>
+      <h2 class="h-m reveal d1">Il profilo della missione.</h2>
+      <div class="card mt reveal">${legendProfile}<div class="chart">${chartProfile(pf)}</div></div>
+    </div></section>
+    <section class="sec gray"><div class="in-w">
+      <p class="eyebrow reveal">Le schede</p>
+      <h2 class="h-m reveal d1">Tutti i programmi della missione.</h2>
+      ${progGrid(ps)}
+    </div></section>${footer()}`;
+  };
+
+  V.programma = (mk, cod) => {
+    const p = D.progs.get(mk + "/" + dec(cod || ""));
+    if (!p) return V.missioni();
+    const m = D.minBy[p.min], pf = profile([p]);
+    const kws = keywords(p.prg);
+    const arts = [D.artBy[135], ...relatedArts(kws, p.min).filter((a) => a.n !== 135)];
+    const sib = progsOf((x) => x.cmis === p.cmis && x.key !== p.key);
+    return `<section class="sec"><div class="in-w">
+      ${schedaHeader(`${m.breve} · Programma ${p.cod}`, p.prg, `<a href="#/scegli">Esplora</a> › <a href="#/ministero/${p.min}">${esc(m.breve)}</a> › <a href="#/missione/${p.cmis}">${esc(p.mis)}</a> › Programma ${esc(p.cod)}`)}
+      <p class="lead reveal d2">Missione ${esc(p.cmis)}: ${esc(p.mis)}.</p>
+      ${statsBlock(pf, arts.length)}
+    </div></section>
+    <section class="sec gray"><div class="in-w">
+      <p class="eyebrow reveal">Gli articoli</p>
+      <h2 class="h-m reveal d1">Cosa dice la legge.</h2>
+      <p class="lead reveal d2 small">L'art. 135 dispone le riduzioni. Gli altri articoli contengono le parole chiave del programma${kws.length ? "" : " (nessuna parola chiave specifica nel nome)"}: collegamento testuale, da verificare leggendo.</p>
+      <div class="chips">${kws.map((k) => `<button class="chip" data-q="${esc(k)}">${esc(k)}…</button>`).join("")}</div>
+      ${artGrid(arts, 6)}
+    </div></section>
+    <section class="sec"><div class="in-w">
+      <p class="eyebrow reveal">I numeri</p>
+      <h2 class="h-m reveal d1">Anno per anno.</h2>
+      <div class="card mt reveal">${legendProfile}<div class="chart">${chartProfile(pf)}</div></div>
+      <div class="card mt reveal"><h3 class="h-s">I valori degli allegati</h3>${numbersTable([p])}
+      <p class="small muted mt-s">"Per legge" indica la quota delle riduzioni predeterminata per legge, come riportata negli allegati.</p></div>
+    </div></section>
+    ${sib.length ? `<section class="sec gray"><div class="in-w"><p class="eyebrow reveal">Nella stessa missione</p><h2 class="h-m reveal d1">Altri programmi.</h2><div class="progs">${sib.map(progCard).join("")}</div></div></section>` : ""}
+    ${footer()}`;
+  };
+
+  // ---------------- panoramica completa ----------------
+  const ST = { year: 0, mode: "competenza", tree: "ministero", open: new Set() };
+  V.tutto = () => {
+    const t5 = D.tot["5"], t6 = D.tot["6"], t7 = D.tot["7"];
+    const cut5 = -sum(t5.v), cut7 = -sum(t7.v), inc6 = sum(t6.v);
+    const y = ST.year;
+    const minItems = D.min.filter((m) => D.minAl[m.k]).map((m) => {
+      const a = D.minAl[m.k], c2 = a.a5 ? -a.a5.v[y] : 0, c1 = a.a7 ? -a.a7.v[y] : 0;
+      return { label: m.breve.length > 30 ? m.breve.slice(0, 29) + "…" : m.breve, go: `#/ministero/${m.k}`, tot: c1 + c2, note: eurS(-(c1 + c2)), parts: [{ v: c2, c: "var(--cut)", tip: `<b>${esc(m.breve)}</b><br>Titolo II, ${YEARS[y]}: ${eur(-c2)}` }, { v: c1, c: "var(--t1)", tip: `<b>${esc(m.breve)}</b><br>Titolo I, ${YEARS[y]}${y === 2 ? " e successivi" : ""}: ${eur(-c1)}` }] };
+    }).sort((a, b) => b.tot - a.tot);
+    const divItems = D.min.filter((m) => D.minAl[m.k]).map((m) => { const a = D.minAl[m.k], n = a.a5 ? -sum(a.a5.v) : 0, p = a.a6 ? sum(a.a6.v) : 0; return { label: m.breve.length > 30 ? m.breve.slice(0, 29) + "…" : m.breve, neg: n, pos: p, tn: `<b>${esc(m.breve)}</b><br>Riduzioni 2027-29: ${eur(-n)}`, tp: `<b>${esc(m.breve)}</b><br>Incrementi 2030-32: ${eur(p)}` }; }).sort((a, b) => b.neg - a.neg);
+    const top = [...D.progs.values()].map((p) => ({ p, c: -((p.a5 ? p.a5.v[y] : 0) + (p.a7 ? p.a7.v[y] : 0)) })).sort((a, b) => b.c - a.c).slice(0, 6);
+    return `<section class="hero" style="min-height:auto;padding:110px 22px 100px">
+      <p class="eyebrow reveal">Tutto il disegno di legge</p>
+      <h1 class="h-xl reveal d1">La manovra<br><span class="grad">in quattro numeri.</span></h1>
+      <div class="stats in-w" style="width:100%;text-align:left">
+        <div class="stat reveal"><div class="n cut" data-count="${cut5}">${eurS(cut5)}</div><div class="l">Riduzioni in conto capitale 2027-2029 (art. 135, c. 1, all. 5)</div></div>
+        <div class="stat reveal d1"><div class="n inc" data-count="${inc6}" data-sign="+">+${eurS(inc6)}</div><div class="l">Reiscritti nel 2030-2032 (all. 6): il ${pct(inc6 / cut5)} dei tagli in conto capitale</div></div>
+        <div class="stat reveal d2"><div class="n t1" data-count="${cut7}">${eurS(cut7)}</div><div class="l">Riduzioni di spesa corrente 2027-2029 (art. 135, c. 2, all. 7), poi ${eurS(-t7.v[2])} l'anno</div></div>
+        <div class="stat reveal d3"><div class="n plain" data-count="${D.art.length}" data-int="1">${D.art.length}</div><div class="l">Articoli, di cui ${D.art.filter((a) => a.rt).length} con Relazione tecnica</div></div>
+      </div>
+    </section>
+    <section class="sec"><div class="in-w">
+      <p class="eyebrow reveal">Allegato 1 · Risultati differenziali</p>
+      <h2 class="h-m reveal d1">I limiti del bilancio.</h2>
+      <p class="lead reveal d2">Livelli massimi del saldo netto da finanziare e del ricorso al mercato fissati dall'art. 1.</p>
+      <div class="card mt reveal"><div class="ctl"><div class="legend" style="margin:0"><span><i style="background:var(--blue)"></i>Saldo netto da finanziare</span><span><i style="background:#a259ff"></i>Ricorso al mercato</span></div>
+        <span class="seg" data-seg="mode"><button data-v="competenza" class="${ST.mode === "competenza" ? "on" : ""}">Competenza</button><button data-v="cassa" class="${ST.mode === "cassa" ? "on" : ""}">Cassa</button></span></div>
+        <div class="chart mt-s">${chartSaldi(ST.mode)}</div></div>
+    </div></section>
+    <section class="sec gray"><div class="in-w">
+      <p class="eyebrow reveal">Art. 135 · Revisione della spesa</p>
+      <h2 class="h-m reveal d1">Chi taglia, e quanto.</h2>
+      <div class="mt">
+        <div class="card reveal"><div class="ctl"><h3 class="h-s">Riduzioni per Ministero</h3><span class="seg" data-seg="year">${YEARS.slice(0, 3).map((yy, i) => `<button data-v="${i}" class="${i === y ? "on" : ""}">${yy}</button>`).join("")}</span></div>
+          <div class="legend"><span><i style="background:var(--cut)"></i>Titolo II</span><span><i style="background:var(--t1)"></i>Titolo I</span></div><div class="chart">${chartH(minItems)}</div></div>
+        <div class="card reveal mt"><h3 class="h-s">Tagliati oggi, reiscritti dopo</h3><p class="small muted">Conto capitale: riduzioni 2027-29 contro incrementi 2030-32.</p>
+          <div class="legend"><span><i style="background:var(--cut)"></i>Riduzioni 2027-29</span><span><i style="background:var(--inc)"></i>Incrementi 2030-32</span></div><div class="chart">${chartDiv(divItems)}</div></div>
+      </div>
+    </div></section>
+    <section class="sec"><div class="in-w">
+      <p class="eyebrow reveal">I programmi più colpiti nel ${YEARS[y]}</p>
+      <h2 class="h-m reveal d1">Dove pesano di più.</h2>
+      <div class="progs">${top.map((x) => progCard(x.p)).join("")}</div>
+    </div></section>
+    <section class="sec gray"><div class="in-w">
+      <p class="eyebrow reveal">Tutti i valori</p>
+      <h2 class="h-m reveal d1">Per Ministero o per settore.</h2>
+      <div class="card mt reveal">${treeTable()}</div>
+    </div></section>
+    <section class="sec dark"><div class="in-w center">
+      <h2 class="h-l reveal">Vuoi andare a fondo?</h2>
+      <p class="lead reveal d1">Leggi gli articoli con la loro Relazione tecnica, oppure parti da un Ministero, una missione o un argomento.</p>
+      <div class="ask-b reveal d2"><a class="pill primary" href="#/articoli">Leggi gli articoli</a><a class="pill light" href="#/scegli">Esplora</a></div>
+    </div></section>${footer()}`;
+  };
+
+  function treeTable() {
+    const groups = new Map();
+    for (const p of D.progs.values()) {
+      const vals = [p.a5, p.a7].flatMap((r) => (r ? r.v : [0, 0, 0])).concat([p.a6 ? sum(p.a6.v) : 0]);
+      const path = ST.tree === "ministero"
+        ? [["m" + p.min, D.minBy[p.min].breve], ["mm" + p.min + p.cod.split(".")[0], p.mis], ["p" + p.key, p.cod + " " + p.prg, p]]
+        : [["n" + p.cmis, p.cmis + " " + p.mis], ["nm" + p.cmis + p.min, D.minBy[p.min].breve], ["p" + p.key, p.cod + " " + p.prg, p]];
+      let lvl = groups;
+      path.forEach(([id, label, prog], d) => {
+        let g = lvl.get(id);
+        if (!g) { g = { id, label, d, prog, vals: vals.map(() => 0), kids: new Map() }; lvl.set(id, g); }
+        vals.forEach((v, i) => (g.vals[i] += v));
+        lvl = g.kids;
+      });
+    }
+    let html = "";
+    const walk = (m) => [...m.values()].sort((a, b) => (a.vals[0] + a.vals[3]) - (b.vals[0] + b.vals[3])).forEach((g) => {
+      const open = ST.open.has(g.id), leaf = !g.kids.size;
+      html += `<tr class="lv${g.d} click" ${leaf ? `data-go="#/programma/${enc(g.prog.min)}/${enc(g.prog.cod)}"` : `data-tog="${esc(g.id)}"`}><td>${leaf ? `<span class="tw">›</span>` : `<span class="tw ${open ? "open" : ""}">›</span>`}${esc(g.label)}</td>${g.vals.map((v) => `<td class="n ${v < 0 ? "neg" : v > 0 ? "pos" : ""}">${v ? eurS(v) : "-"}</td>`).join("")}</tr>`;
+      if (open && !leaf) walk(g.kids);
+    });
+    walk(groups);
+    return `<div class="ctl"><span class="seg" data-seg="tree"><button data-v="ministero" class="${ST.tree === "ministero" ? "on" : ""}">Per Ministero</button><button data-v="missione" class="${ST.tree === "missione" ? "on" : ""}">Per missione</button></span><span class="small muted">Tocca una riga per aprirla</span></div>
+      <div class="tbl-wrap"><table><thead><tr><th></th><th class="n" colspan="3">All. 5 · Titolo II</th><th class="n" colspan="3">All. 7 · Titolo I</th><th class="n">All. 6</th></tr>
+      <tr><th>${ST.tree === "ministero" ? "Ministero / missione / programma" : "Missione / Ministero / programma"}</th><th class="n">2027</th><th class="n">2028</th><th class="n">2029</th><th class="n">2027</th><th class="n">2028</th><th class="n">2029+</th><th class="n">2030-32</th></tr></thead><tbody>${html}</tbody></table></div>`;
+  }
+
+  // ---------------- articoli ----------------
+  const AS = { q: "" };
+  V.articoli = () => {
+    const list = AS.q ? searchArts(AS.q) : D.art;
     let cur = "", html = "";
     for (const a of list) {
-      if (a.titolo !== cur) { cur = a.titolo; html += `<h3 style="margin-top:18px;color:var(--navy)">${esc(cap(cur))}</h3>`; }
-      html += `<details class="art" ${q && list.length < 6 ? "open" : ""}><summary>Art. ${a.n} · ${hl(a.rubrica)} <span class="muted small">${a.capo ? "· " + esc(cap(a.capo)) : ""}${a.n_importi ? ` · ${a.n_importi} importi citati in milioni` : ""}</span></summary><div class="txt">${hl(a.testo)}</div></details>`;
+      const t = AS.q ? "Risultati" : a.titolo || "Sezione II";
+      if (t !== cur) { if (cur) html += "</div>"; cur = t; html += `<h3 class="h-s mt reveal">${esc(cap(t))}</h3><div class="arts">`; }
+      html += artCard(a);
     }
-    return `<h1>Articolato (Sezione I)</h1>
-    <p class="lead">${S.art.length} articoli del DDL. La ricerca filtra rubrica e testo: utile per risalire alle norme che finanziano o definanziano un settore (ad es. "autorizzazione di spesa", "è ridotto", "fondo").</p>
-    <div class="card bar-ctl"><input type="search" placeholder="Cerca nel testo..." value="${esc(st.q)}" data-act="art-q">
-      <select data-act="art-tit"><option value="">Tutti i titoli</option>${tits.map((t) => `<option ${t === st.tit ? "selected" : ""} value="${esc(t)}">${esc(cap(t)).slice(0, 90)}</option>`).join("")}</select>
-      <span class="muted small">${list.length} articoli</span></div>
-    <div class="card">${html || '<p class="muted">Nessun articolo trovato.</p>'}</div>`;
+    if (cur) html += "</div>";
+    return `<section class="sec"><div class="in-w">
+      <p class="eyebrow reveal">L'articolato</p>
+      <h1 class="h-l reveal d1">${D.art.length} articoli.</h1>
+      <p class="lead reveal d2">Aprine uno per leggere il testo, con i commi che contengono importi in evidenza, e la Relazione tecnica che lo accompagna.</p>
+      <form class="search reveal d3" id="aform"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="aq" type="search" placeholder="Filtra per parola" value="${esc(AS.q)}" autocomplete="off" aria-label="Filtra gli articoli"></form>
+      <div id="alist">${html || `<p class="empty">Nessun articolo trovato.</p>`}</div>
+    </div></section>${footer()}`;
   };
 
-  views.note = () => `<h1>Note metodologiche e fonti</h1>
-    <div class="card"><h2>Fonti</h2><ul>
-      <li><b>Testo del DDL di bilancio 2027-2029</b> (Sezione I, PDF nel repository): articolato e allegati 4, 5, 6 e 7. Gli allegati sono immagini: le cifre sono estratte con OCR (tesseract) e verificate controllando che i programmi sommino alla missione, le missioni al Ministero e i Ministeri al totale di ciascun allegato. Le poche correzioni manuali sono elencate in <code>scripts/parse_allegati.py</code> con la pagina di riferimento.</li>
-      <li><b>${esc(S.meta.fonte_lb)}</b>: stanziamenti di competenza 2026, 2027 e 2028 per capitolo e piano gestionale, usati come termine di confronto (stessa unità di voto: Ministero, missione, programma).</li>
-      <li><b>DLB 2027-2029 per piano gestionale</b> (BDAP): ${S.dlb ? "caricato." : "non ancora pubblicato; la pagina \"Variazioni DLB per PG\" si attiva automaticamente quando il dataset viene scaricato."}</li>
-    </ul></div>
-    <div class="card"><h2>Limiti da tenere presenti</h2><ul>
-      <li>Il confronto con la LB 2026 non è il tendenziale del DLB 2027: tra le due leggi intervengono assestamento, decreti e variazioni. È una base di riferimento ragionevole per il 2027 e il 2028, non per il 2029 (fuori dal triennio).</li>
-      <li>Le riduzioni dell'art. 135 sono definite per programma; la loro distribuzione per capitolo e PG è già nella Sezione II del DLB, che non è nel PDF caricato. Il simulatore serve a valutare sostenibilità e alternative, non riproduce la ripartizione effettiva.</li>
-      <li>La "rigidità" per categoria economica è un'euristica. La classificazione corretta (oneri inderogabili, fattore legislativo, adeguamento al fabbisogno) è per capitolo e non è presente nei dataset open usati.</li>
-      <li>Ministero della Difesa e altre amministrazioni non compaiono negli allegati 5-7: non hanno riduzioni a titolo dell'art. 135.</li>
-      <li>Gli importi "in milioni" nell'articolato sono un conteggio delle cifre citate nel testo, non la quantificazione degli effetti (che è nella Relazione tecnica).</li>
-    </ul></div>
-    <div class="card"><h2>Aggiornare i dati</h2><pre class="small">python scripts/fetch_bdap.py lb 2026
-python scripts/fetch_bdap.py dlb 2027      # quando pubblicato
-python scripts/parse_allegati.py &lt;cartella_ocr&gt;
-python scripts/build_data.py</pre></div>`;
+  V.fonti = () => `<section class="sec"><div class="in-n">
+    <p class="eyebrow reveal">Metodo</p><h1 class="h-l reveal d1">Fonti e limiti.</h1>
+    <div class="card mt reveal"><h3 class="h-s">Da dove vengono i dati</h3>
+      <p>Tutto ciò che vedi viene da due documenti: il <b>testo del disegno di legge di bilancio 2027-2029</b> (articoli e allegati 1, 5, 6 e 7) e la <b>Relazione tecnica</b>. Non ci sono stime o dati esterni.</p>
+      <p>Le tabelle degli allegati 5, 6 e 7 sono immagini nel PDF. I valori sono stati letti con OCR e accettati solo dopo il controllo incrociato: i programmi sommano alla missione, le missioni al Ministero, i Ministeri al totale di ogni allegato. Le poche correzioni manuali sono documentate nel codice con il numero di pagina.</p></div>
+    <div class="card mt reveal"><h3 class="h-s">Cosa tenere presente</h3>
+      <p>Gli importi degli allegati sono per Ministero, missione e programma: il disegno di legge non li ripartisce per capitolo.</p>
+      <p>I collegamenti tra articoli e Ministeri indicano che l'articolo <b>cita</b> il Ministero nel testo. I collegamenti tra articoli e missioni o programmi sono <b>testuali</b> (parole chiave del nome): sono un punto di partenza, non un'attribuzione contabile.</p>
+      <p>La Relazione tecnica è riportata così com'è; le tabelle conservano l'impaginazione originale. I "commi con importi" sono i commi che contengono cifre in euro, evidenziati senza elaborazioni.</p>
+      <p>Le riduzioni dell'allegato 7 per il 2029 valgono anche per gli anni successivi ("2029 e successivi"): nei grafici gli anni 2030-2032 le mostrano in trasparenza.</p></div>
+  </div></section>${footer()}`;
 
-  // ---------- CSV ----------
-  function downloadCSV(name, header, rows) {
-    const q = (x) => { const s = String(x ?? ""); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const txt = "﻿" + [header, ...rows].map((r) => r.map(q).join(";")).join("\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([txt], { type: "text/csv;charset=utf-8" }));
-    a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  // ---------------- foglio articolo ----------------
+  let sheetQ = "";
+  function hl(s) {
+    s = esc(s);
+    const ws = terms(sheetQ);
+    if (!ws.length) return s;
+    // evidenzia su testo con accenti: ricerca sulla versione "piegata" mantenendo gli indici
+    const f = fold(s);
+    const marks = [];
+    for (const w of ws) { let i = 0; while ((i = f.indexOf(w, i)) !== -1) { marks.push([i, i + w.length]); i += w.length; } }
+    if (!marks.length) return s;
+    marks.sort((a, b) => a[0] - b[0]);
+    let out = "", last = 0;
+    for (const [a, b] of marks) { if (a < last) continue; out += s.slice(last, a) + "<mark>" + s.slice(a, b) + "</mark>"; last = b; }
+    return out + s.slice(last);
+  }
+  function openArt(n, tab) {
+    const a = D.artBy[n];
+    if (!a) return;
+    tab = tab || "ddl";
+    const sh = $("#sheet"), bk = $("#sheet-back");
+    const body = tab === "rt"
+      ? `<div class="rt">${(a.rt || []).map((b) => (b.t === "pre" ? `<pre>${hl(b.s)}</pre>` : `<p>${hl(b.s)}</p>`)).join("")}</div>`
+      : `${a.importi.length ? `<p class="small muted">I commi in evidenza contengono importi in euro.</p>` : ""}${a.commi.map((c, i) => `<div class="comma ${a.importi.includes(i) ? "imp" : ""}">${hl(c)}</div>`).join("")}
+         ${n === 135 ? `<p class="mt-s"><a class="pill primary small" href="#/tutto" data-close>Vedi gli allegati 5, 6 e 7</a></p>` : ""}`;
+    sh.innerHTML = `<div class="sheet-h"><button class="x" data-close aria-label="Chiudi">×</button>
+      <div class="small muted">${esc(cap(a.titolo || ""))}${a.capo ? " · " + esc(cap(a.capo)) : ""}</div>
+      <h2 class="h-s" id="sheet-title" style="margin-top:6px">Art. ${a.n} · ${esc(a.rubrica)}</h2>
+      <div class="ctl mt-s"><span class="seg" data-sheet="${a.n}"><button data-v="ddl" class="${tab === "ddl" ? "on" : ""}">Testo del DDL</button>${a.rt ? `<button data-v="rt" class="${tab === "rt" ? "on" : ""}">Relazione tecnica</button>` : ""}</span>
+      <span class="a-m">${Object.keys(a.ministeri).map((k) => `<a class="badge g" href="#/ministero/${k}" data-close>${esc(D.minBy[k].breve)}</a>`).join(" ")}</span></div></div>
+      <div class="sheet-b">${body}</div>`;
+    if (sh.hidden) {
+      sh.hidden = false; bk.hidden = false; document.body.style.overflow = "hidden";
+      requestAnimationFrame(() => { sh.classList.add("show"); bk.classList.add("show"); });
+      lastFocus = document.activeElement; setTimeout(() => $(".x", sh).focus(), 50);
+    }
+  }
+  let lastFocus = null;
+  function closeSheet() {
+    const sh = $("#sheet"), bk = $("#sheet-back");
+    if (sh.hidden) return;
+    sh.classList.remove("show"); bk.classList.remove("show"); document.body.style.overflow = "";
+    setTimeout(() => { sh.hidden = true; bk.hidden = true; }, reduced ? 0 : 450);
+    if (lastFocus) lastFocus.focus();
   }
 
-  // ---------- routing e eventi ----------
-  let current = "panoramica";
-  function render() {
-    const h = location.hash.replace(/^#/, "") || "panoramica";
-    const [view, ...rest] = h.split("/");
-    current = views[view] ? view : "panoramica";
-    document.querySelectorAll("#tabs a").forEach((a) => a.classList.toggle("on", a.getAttribute("href") === "#" + current));
-    const y = scrollY;
-    $("#app").innerHTML = views[current](rest.join("/"));
-    return y;
+  // ---------------- animazioni ----------------
+  let io;
+  function animate(root) {
+    if (io) io.disconnect();
+    const els = $$(".reveal, .chart", root);
+    if (reduced || !("IntersectionObserver" in window)) { els.forEach((e) => e.classList.add("in")); return; }
+    io = new IntersectionObserver((ents) => ents.forEach((en) => {
+      if (!en.isIntersecting) return;
+      en.target.classList.add("in");
+      $$("[data-count]", en.target).concat(en.target.matches("[data-count]") ? [en.target] : []).forEach(countUp);
+      io.unobserve(en.target);
+    }), { threshold: 0.15, rootMargin: "0px 0px -40px 0px" });
+    els.forEach((e) => io.observe(e));
   }
-  const rerender = () => { const y = scrollY; render(); scrollTo(0, y); };
-  addEventListener("hashchange", () => { render(); scrollTo(0, 0); });
+  function countUp(el) {
+    if (el._done) return; el._done = true;
+    const v = +el.dataset.count, isInt = el.dataset.int, sign = el.dataset.sign || "";
+    const fmt = (x) => (isInt ? nf0.format(Math.round(x)) : sign + eurS(x));
+    const t0 = performance.now(), dur = 1300;
+    const step = (t) => { const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3); el.textContent = fmt(v * e); if (k < 1) requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  }
+  function navTone() {
+    const el = document.elementFromPoint(20, 60);
+    $("#nav").classList.toggle("dark", !!(el && el.closest(".hero, .sec.dark")));
+  }
+  addEventListener("scroll", navTone, { passive: true });
 
+  // ---------------- tooltip ----------------
+  document.addEventListener("mousemove", (e) => {
+    const t = e.target.closest && e.target.closest("[data-tip]"), el = $("#tip");
+    if (!t) { el.hidden = true; return; }
+    el.innerHTML = t.getAttribute("data-tip"); el.hidden = false;
+    el.style.left = Math.min(e.clientX + 14, innerWidth - el.offsetWidth - 8) + "px";
+    el.style.top = Math.min(e.clientY + 14, innerHeight - el.offsetHeight - 8) + "px";
+  });
+
+  // ---------------- routing ----------------
+  function route() {
+    const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+    const [v, ...args] = parts;
+    const map = { "": "home", scegli: "scegli", ministeri: "ministeri", ministero: "ministero", missioni: "missioni", missione: "missione", programma: "programma", argomento: "argomento", tutto: "tutto", articoli: "articoli", articolo: "articoli", fonti: "fonti" };
+    const name = map[v || ""] || "home";
+    sheetQ = name === "argomento" ? dec(args[0] || "") : name === "articoli" ? AS.q : "";
+    return { name, args, art: v === "articolo" ? +args[0] : null };
+  }
+  function render(keepScroll) {
+    const r = route(), y = scrollY;
+    const html = V[r.name](...r.args);
+    const app = $("#app");
+    app.innerHTML = `<div class="view">${html}</div>`;
+    $$(".nav-links a").forEach((a) => a.classList.toggle("on", a.dataset.nav === r.name || (a.dataset.nav === "scegli" && ["ministeri", "ministero", "missioni", "missione", "programma", "argomento"].includes(r.name))));
+    document.title = (r.name === "home" ? "" : ($("h1", app)?.textContent || "") + " · ") + "Legge di bilancio 2027-2029";
+    if (keepScroll) { scrollTo(0, y); $(".view", app).style.animation = "none"; } else scrollTo(0, 0);
+    animate(app);
+    navTone(); setTimeout(navTone, 120);
+    if (r.art) openArt(r.art);
+  }
+  addEventListener("hashchange", () => { closeSheet(); render(false); });
+
+  // ---------------- eventi ----------------
   document.addEventListener("click", (e) => {
     const t = e.target;
+    if (t.closest("[data-close]")) { closeSheet(); if (!t.closest("a")) e.preventDefault(); return; }
+    if (t.id === "sheet-back") { closeSheet(); return; }
+    const sb = t.closest("[data-sheet] button");
+    if (sb) { openArt(+sb.parentElement.dataset.sheet, sb.dataset.v); $(".sheet-b").scrollTop = 0; return; }
+    const art = t.closest("[data-art]");
+    if (art) { openArt(+art.dataset.art); return; }
+    const more = t.closest("[data-more]");
+    if (more) { const box = $("#" + more.dataset.more); box.innerHTML = more.dataset.list.split(",").map((n) => artCard(D.artBy[n])).join(""); more.parentElement.remove(); animate(box.parentElement); return; }
+    const mp = t.closest("[data-moreprog]");
+    if (mp) { const box = $("#pg"); box.innerHTML = mp.dataset.moreprog.split(",").map((k) => progCard(D.progs.get(k))).join(""); mp.parentElement.remove(); animate(box.parentElement); return; }
+    const chip = t.closest("[data-q]");
+    if (chip) { location.hash = "#/argomento/" + enc(chip.dataset.q); return; }
     const go = t.closest("[data-go]");
-    if (go && !t.closest("a,input,button")) { location.hash = go.getAttribute("data-go"); return; }
+    if (go && !t.closest("a")) { location.hash = go.dataset.go; return; }
     const tog = t.closest("[data-tog]");
-    if (tog) { const id = tog.getAttribute("data-tog"); state.set.open.has(id) ? state.set.open.delete(id) : state.set.open.add(id); rerender(); return; }
-    const segBtn = t.closest(".seg button");
-    const act = (segBtn ? segBtn.parentElement : t.closest("[data-act]"))?.getAttribute("data-act");
-    if (!act) return;
-    const val = segBtn ? segBtn.getAttribute("data-v") : t.closest("[data-act]").getAttribute("data-v");
-    const P = state.prog;
-    switch (act) {
-      case "pano-year": state.pano.year = +val; break;
-      case "set-mode": state.set.mode = val; state.set.open.clear(); break;
-      case "set-all": {
-        if (state.set.open.size) state.set.open.clear();
-        else { const pre = state.set.mode === "ministero" ? ["m:", "mm:"] : ["n:", "nm:"]; for (const pr of S.progs.values()) { const b = pr.base; if (state.set.mode === "ministero") { state.set.open.add("m:" + pr.min); state.set.open.add("mm:" + pr.min + "|" + pr.u1); } else { const mn = b ? b.mis : pr.mis; state.set.open.add("n:" + mn); state.set.open.add("nm:" + mn + pr.min); } } void pre; }
-        break;
-      }
-      case "set-csv": {
-        const rows = [...S.progs.values()].map((pr) => [cap(pr.min), pr.base ? pr.base.mis : pr.mis, pr.cod, pr.prg, v(pr.a5, 0), v(pr.a5, 1), v(pr.a5, 2), p(pr.a5, 0), p(pr.a5, 1), p(pr.a5, 2), v(pr.a7, 0), v(pr.a7, 1), v(pr.a7, 2), p(pr.a7, 0), p(pr.a7, 1), p(pr.a7, 2), v(pr.a6, 0), v(pr.a6, 1), v(pr.a6, 2), pr.base ? pr.base.t[1][1] : "", pr.base ? pr.base.t[2][1] : ""]);
-        downloadCSV("riduzioni_art135_per_programma.csv", ["Ministero", "Missione", "Codice", "Programma", "All5 2027", "All5 2028", "All5 2029", "All5 pred 2027", "All5 pred 2028", "All5 pred 2029", "All7 2027", "All7 2028", "All7 2029+", "All7 pred 2027", "All7 pred 2028", "All7 pred 2029+", "All6 2030", "All6 2031", "All6 2032", "LB2026 Tit I 2027", "LB2026 Tit II 2027"], rows);
-        return;
-      }
-      case "sim-tit": P.tit = +val; P.cuts = null; P.inc = null; break;
-      case "sim-year": P.yi = +val; P.cuts = null; P.inc = null; break;
-      case "sim-pro": P.cuts = null; break;
-      case "sim-zero": P.cuts = P.cuts.map(() => 0); break;
-      case "sim-csv": {
-        const pr = S.progs.get(P.key), C = S.lbC, D = S.lb.dict, lbi = P.yi + 1;
-        const pgs = pgRowsFor(pr, P.tit).map((r) => ({ r, a: r[C["cp" + (lbi + 1)]] })).filter((x) => x.a !== 0).sort((a, b) => b.a - a.a);
-        downloadCSV(`simulazione_${pr.min.slice(0, 20)}_${pr.cod}_${2027 + P.yi}.csv`.replace(/[^\w.]+/g, "_"), ["Capitolo", "PG", "Piano gestionale", "Categoria", "Incluso", "LB", "Riduzione simulata", "Nuovo stanziamento"],
-          pgs.map((x, i) => [x.r[C.cap], x.r[C.pg], D[x.r[C.pgd]], x.r[C.cat], P.inc[i] ? "si" : "no", x.a, P.cuts[i], x.a - P.cuts[i]]));
-        return;
-      }
-      case "pg-page": state.pg.page += +val; break;
-      case "pg-csv": {
-        const C = S.lbC, D = S.lb.dict;
-        downloadCSV("piani_gestionali_lb2026.csv", ["Amministrazione", "Missione", "Programma", "Azione", "CdR", "Capitolo", "Denominazione capitolo", "PG", "Piano gestionale", "Titolo", "Categoria", "CP 2026", "CP 2027", "CP 2028"],
-          pgFiltered().map((r) => [D[r[C.amm]], D[r[C.mis]], D[r[C.prg]], D[r[C.az]], D[r[C.cdr]], r[C.cap], D[r[C.capd]], r[C.pg], D[r[C.pgd]], r[C.tit], r[C.cat], r[C.cp1], r[C.cp2], r[C.cp3]]));
-        return;
-      }
-      case "var-year": state.var.yi = +val; break;
-      case "var-page": state.var.page += +val; break;
-      case "var-pick": state.var.amm = val; state.var.page = 0; break;
-      case "var-csv": {
-        const ds = S.dlb, C = colIndex(ds), D = ds.dict;
-        downloadCSV("dlb_variazioni_pg.csv", ["Amministrazione", "Programma", "Capitolo", "PG", "Piano gestionale", ...ds.cols.slice(13)],
-          ds.rows.map((r) => [D[r[C.amm]], D[r[C.prg]], r[C.cap], r[C.pg], D[r[C.pgd]], ...r.slice(13)]));
-        return;
-      }
-      default: return;
-    }
-    rerender();
+    if (tog) { const id = tog.dataset.tog; ST.open.has(id) ? ST.open.delete(id) : ST.open.add(id); render(true); return; }
+    const sg = t.closest("[data-seg] button");
+    if (sg) { const k = sg.parentElement.dataset.seg; if (k === "year") ST.year = +sg.dataset.v; if (k === "mode") ST.mode = sg.dataset.v; if (k === "tree") { ST.tree = sg.dataset.v; ST.open.clear(); } render(true); }
   });
-
-  document.addEventListener("change", (e) => {
-    const t = e.target, act = t.getAttribute("data-act"); if (!act) return;
-    const P = state.prog;
-    switch (act) {
-      case "prog-sel": location.hash = "programma/" + encodeURIComponent(t.value); return;
-      case "sim-net": P.net = t.checked; P.cuts = null; break;
-      case "sim-inc": P.inc[+t.getAttribute("data-i")] = t.checked; P.cuts = null; break;
-      case "sim-cut": P.cuts[+t.getAttribute("data-i")] = +t.value || 0; break;
-      case "pg-amm": state.pg.amm = t.value; state.pg.page = 0; break;
-      case "pg-tit": state.pg.tit = t.value; state.pg.page = 0; break;
-      case "pg-cat": state.pg.cat = t.value; state.pg.page = 0; break;
-      case "pg-sort": state.pg.sort = t.value; state.pg.page = 0; break;
-      case "pg-only": state.pg.only = t.checked; state.pg.page = 0; break;
-      case "var-amm": state.var.amm = t.value; state.var.page = 0; break;
-      case "art-tit": state.art.tit = t.value; break;
-      default: return;
-    }
-    rerender();
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+  document.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (e.target.id === "sform") { const q = $("#sq").value.trim(); location.hash = "#/argomento/" + enc(q); }
   });
-
   let deb;
   document.addEventListener("input", (e) => {
-    const t = e.target, act = t.getAttribute("data-act");
-    const map = { "pg-q": () => { state.pg.q = t.value; state.pg.page = 0; }, "var-q": () => { state.var.q = t.value; state.var.page = 0; }, "art-q": () => { state.art.q = t.value; } };
-    if (!map[act]) return;
-    map[act]();
+    if (e.target.id !== "aq") return;
     clearTimeout(deb);
-    deb = setTimeout(() => { const pos = t.selectionStart; rerender(); const n = $(`[data-act="${act}"]`); if (n) { n.focus(); n.setSelectionRange(pos, pos); } }, 250);
+    deb = setTimeout(() => { AS.q = e.target.value; sheetQ = AS.q; const pos = e.target.selectionStart; render(true); const n = $("#aq"); n.focus(); n.setSelectionRange(pos, pos); }, 250);
   });
 
-  load().then(render).catch((err) => { $("#app").innerHTML = `<div class="callout warn">Errore nel caricamento dei dati: ${esc(err.message)}. Se il file è aperto da disco, servire la cartella <code>docs/</code> con un web server (es. <code>python -m http.server</code>).</div>`; });
+  load().then(() => render(false)).catch((err) => {
+    $("#app").innerHTML = `<section class="sec"><div class="in-n"><h1 class="h-m">Dati non disponibili</h1><p class="lead">${esc(err.message)}. Se apri il file da disco, servi la cartella <code>docs/</code> con un web server (ad es. <code>python3 -m http.server</code>).</p></div></section>`;
+  });
 })();
