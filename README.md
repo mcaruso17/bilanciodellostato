@@ -1,41 +1,39 @@
-# Bilancio dello Stato: dashboard DDL di bilancio 2027-2029
+# Legge di bilancio 2027-2029: lettura guidata
 
-Dashboard statica (HTML/CSS/JS, nessuna dipendenza) per analizzare le riduzioni e le rimodulazioni di spesa del disegno di legge di bilancio 2027-2029, per settore, fino al livello di piano gestionale.
+Sito statico (HTML/CSS/JS, nessuna dipendenza) per leggere il disegno di legge di bilancio 2027-2029. Si apre con una domanda ("Ti interessa qualcosa di particolare?") e porta l'utente agli articoli e ai numeri partendo da un Ministero, da una missione/programma o da un argomento. Online: https://mcaruso17.github.io/bilanciodellostato/
 
-## Viste
+## Percorsi
 
-| Vista | Contenuto |
+| Pagina | Contenuto |
 |---|---|
-| Panoramica | Totali art. 135 (allegati 5, 6, 7), riduzioni per Ministero e anno, spostamento temporale Titolo II (2027-29 vs 2030-32), programmi più colpiti |
-| Riduzioni per settore | Albero Ministero > missione > programma oppure missione (settore) > Ministero > programma, con peso sul totale e sulla spesa non rigida LB 2026 |
-| Analisi programma | Riduzioni del programma, baseline LB 2026 per titolo, simulatore di ripartizione della riduzione sui piani gestionali (pro quota o manuale, export CSV) |
-| Piani gestionali | Tutti i PG della LB 2026-2028 con filtri e ordinamento per calo a legislazione vigente |
-| Variazioni DLB per PG | Scomposizione per PG (legislazione vigente, rimodulazioni, rif./def./rip., effetti Sez. I, DLB integrato): si attiva quando RGS pubblica il dataset DLB 2027 su BDAP. Include l'allegato 4 (unico allegato con dettaglio per PG) |
-| Articolato | Ricerca nel testo dei 157 articoli |
+| Inizio | Domanda iniziale: "Sì" porta alla scelta del percorso, "No, fammi vedere tutto" alla panoramica |
+| Esplora | Ministero, missione e programma, argomento |
+| Scheda Ministero / missione / programma | Articoli collegati, poi grafici e valori degli allegati 5, 6, 7, poi le schede dei programmi |
+| Argomento | Ricerca nel testo dei 157 articoli e nella Relazione tecnica, con i programmi pertinenti |
+| Tutto | Allegato 1 (saldi), riduzioni per Ministero, spostamento 2027-29 verso 2030-32, tabella per Ministero o missione |
+| Articoli | Tutti gli articoli; ognuno si apre con testo del DDL (commi con importi in evidenza) e Relazione tecnica |
 
-## Avvio locale
+## Fonti
+
+Solo i due documenti ufficiali nel repository:
+
+- `Testo_DDLB_2027___2029.pdf`: articolato, allegato 1 (risultati differenziali), allegati 5, 6, 7 (art. 135, riduzioni e incrementi per Ministero, missione, programma).
+- `Relazione_tecnica.pdf`: testo per articolo (articoli 1-137, stessa numerazione del DDL).
+
+Le tabelle degli allegati 5-7 sono immagini: sono lette con OCR e validate con i totali (programmi, missioni, Ministeri, totale di allegato: nessuna incoerenza). Le correzioni manuali sono in `scripts/parse_allegati.py` con il numero di pagina.
+
+## Rigenerare i dati
 
 ```bash
-cd docs && python3 -m http.server 8000
+pdftotext -layout Testo_DDLB_2027___2029.pdf data/ddl_testo.txt
+pdftotext -layout Relazione_tecnica.pdf data/rt_testo.txt
+python3 scripts/parse_allegati.py <cartella_ocr>   # vedi docstring per i comandi OCR
+python3 scripts/build_data.py                      # genera docs/data/ddl.json
 ```
 
-Poi aprire http://localhost:8000. Pubblicabile con GitHub Pages dalla cartella `docs/`.
-
-## Dati e pipeline
-
-```bash
-python3 scripts/fetch_bdap.py lb 2026      # LB 2026 per piano gestionale (copia compressa in data/bdap/*.csv.gz)
-python3 scripts/fetch_bdap.py dlb 2027     # DLB 2027 per piano gestionale, quando pubblicato su BDAP
-python3 scripts/parse_allegati.py <ocr>    # allegati 5, 6, 7 dal PDF (vedi docstring per i comandi OCR)
-python3 scripts/build_data.py              # genera docs/data/*.json
-```
-
-- `data/allegati/allegati_art135.csv`: allegati 5, 6, 7 per Ministero/missione/programma. Estratti via OCR (le tabelle del PDF sono immagini) e validati: ogni programma somma alla missione, ogni missione al Ministero, ogni Ministero al totale di allegato. Le correzioni manuali sono elencate in `scripts/parse_allegati.py` con la pagina di riferimento.
-- `data/allegati/allegato4_art86.csv`: allegato 4, trascritto a mano.
-- `data/bdap/lb_2026_pg.csv.gz`: BDAP Open Data, Legge di bilancio 2026 pubblicata, spese per piano di gestione.
+Locale: `cd docs && python3 -m http.server 8000`.
 
 ## Limiti
 
-- Il PDF caricato contiene la Sezione I: le riduzioni sono per programma. Il dettaglio per capitolo/PG del DLB 2027 sarà disponibile solo con il dataset BDAP del DLB (non ancora pubblicato al 2 novembre 2026).
-- La LB 2026 è usata come baseline: non coincide con il tendenziale del DLB 2027 e non copre il 2029.
-- La "rigidità" per categoria economica è un'euristica, non la classificazione oneri inderogabili / fattore legislativo / fabbisogno.
+- Gli importi degli allegati sono per programma: il DDL non li ripartisce per capitolo o piano gestionale.
+- Articolo e Ministero sono collegati quando l'articolo cita il Ministero; articolo e missione/programma sono collegati per parole chiave del nome (collegamento testuale, segnalato nel sito).

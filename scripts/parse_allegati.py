@@ -39,6 +39,7 @@ TEXT_FIXES = {
     148: [("24 (o) 24 (e) 745 (o)", "24 0 24 0 715 0")],
     152: [("—97.290.602", "91.290.602")],
     153: [("131.1142570", "131.142.570")],
+    155: [("2.4. Diritto allo studio (1)", "2.1 Diritto allo studio (1)")],
     169: [("7.192 0 7.792 0", "7.792 0 7.792 0")],
 }
 # Righe che l'OCR non ha letto (pagina -> righe da aggiungere), trascritte dall'immagine
@@ -129,6 +130,7 @@ def naz_code(d):
 
 def clean_descr(d):
     d = re.sub(r"\s*\(\d+\)\s*$", "", d.strip())  # numero di missione/programma COFOG tra parentesi
+    d = d.replace("’", "'").replace('"', "'").replace("Ricercascientifica", "Ricerca scientifica")
     return re.sub(r"\s+", " ", d).replace("Servizie ", "Servizi e ").replace("Accertamentoe", "Accertamento e")
 
 
