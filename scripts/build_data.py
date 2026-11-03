@@ -122,6 +122,36 @@ def parse_rt():
     return rt
 
 
+NUMCELL = re.compile(r"^[-+]?\(?[\d.,]+\)?\s*%?$|^[-+]?[\d.,]+\s+[-+]?[\d.,]+")
+
+
+def tabular(l):
+    """Riga di tabella: piu' colonne separate da spazi, oppure colonne con numeri.
+    Le righe di prosa giustificata (un solo spazio largo, solo parole) restano testo."""
+    s = l.strip()
+    if not s:
+        return False
+    cells = [c for c in re.split(r" {3,}", s) if c]
+    numeric = any(NUMCELL.match(c) for c in cells)
+    words = re.findall(r"[A-Za-zÀ-ù]+", s)
+    if not numeric and len(cells) >= 2:
+        # prosa giustificata o voce di elenco: spazi larghi ma struttura di frase
+        if re.match(r"^(\d+|[a-z])\)\s", s):
+            return False
+        if len(words) >= 7 and re.search(r"\b(di|del|della|dei|delle|per|che|il|la|le|un|una|con|nel|nella)\b", " ".join(cells)):
+            return False
+    if len(cells) >= 3:
+        return True
+    if len(cells) == 2 and any(NUMCELL.match(c) for c in cells):
+        return True
+    if len(cells) == 1 and NUMCELL.match(s) and len(s) < 40:
+        return True  # riga di soli numeri dentro una tabella
+    indent = len(l) - len(l.lstrip())
+    words = len([w for w in words if len(w) >= 3])
+    # righe molto rientrate e brevi senza forma di frase: intestazioni di tabella
+    return indent > 12 and len(s) < 60 and words <= 6 and not re.search(r"[.;:]$", s)
+
+
 def blocks(body):
     """Divide il testo in paragrafi (testo continuo) e tabelle (preformattate)."""
     out, para, table = [], [], []
@@ -142,7 +172,7 @@ def blocks(body):
 
     for l in body.splitlines():
         s = l.strip()
-        is_tab = bool(re.search(r"\S {3,}\S", s)) or (bool(s) and len(l) - len(l.lstrip()) > 12)
+        is_tab = tabular(l)
         if not s:
             if table:
                 table.append("")

@@ -34,7 +34,7 @@
   // ---------------- dati ----------------
   const D = {};
   async function load() {
-    const r = await fetch("data/ddl.json?v=4");
+    const r = await fetch("data/ddl.json?v=5");
     if (!r.ok) throw new Error("data/ddl.json");
     const d = await r.json();
     D.min = d.ministeri; D.minBy = Object.fromEntries(d.ministeri.map((m) => [m.k, m]));
