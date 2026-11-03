@@ -132,7 +132,7 @@
 
   function chartSaldi(mode) {
     const a = D.a1, W = 680, h = 280, top = 20, bot = 34;
-    const series = [{ k: "saldo_netto", c: "var(--blue)", l: "Saldo netto da finanziare" }, { k: "ricorso_mercato", c: "#a259ff", l: "Ricorso al mercato" }];
+    const series = [{ k: "saldo_netto", c: "var(--verde)", l: "Saldo netto da finanziare" }, { k: "ricorso_mercato", c: "var(--neutro)", l: "Ricorso al mercato" }];
     const m = Math.max(...series.flatMap((s) => a[mode][s.k]));
     const gw = (W - 20) / 3, bw = Math.min(70, gw * 0.3);
     let s = `<svg viewBox="0 0 ${W} ${h}" role="img">`;
@@ -460,7 +460,7 @@
       <p class="eyebrow reveal">Allegato 1 · Risultati differenziali</p>
       <h2 class="h-m reveal d1">I limiti del bilancio.</h2>
       <p class="lead reveal d2">Livelli massimi del saldo netto da finanziare e del ricorso al mercato fissati dall'art. 1.</p>
-      <div class="card mt reveal"><div class="ctl"><div class="legend" style="margin:0"><span><i style="background:var(--blue)"></i>Saldo netto da finanziare</span><span><i style="background:#a259ff"></i>Ricorso al mercato</span></div>
+      <div class="card mt reveal"><div class="ctl"><div class="legend" style="margin:0"><span><i style="background:var(--verde)"></i>Saldo netto da finanziare</span><span><i style="background:var(--neutro)"></i>Ricorso al mercato</span></div>
         <span class="seg" data-seg="mode"><button data-v="competenza" class="${ST.mode === "competenza" ? "on" : ""}">Competenza</button><button data-v="cassa" class="${ST.mode === "cassa" ? "on" : ""}">Cassa</button></span></div>
         <div class="chart mt-s">${chartSaldi(ST.mode)}</div></div>
     </div></section>
