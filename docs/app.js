@@ -34,7 +34,7 @@
   // ---------------- dati ----------------
   const D = {};
   async function load() {
-    const r = await fetch("data/ddl.json?v=5");
+    const r = await fetch("data/ddl.json?v=6");
     if (!r.ok) throw new Error("data/ddl.json");
     const d = await r.json();
     D.min = d.ministeri; D.minBy = Object.fromEntries(d.ministeri.map((m) => [m.k, m]));
@@ -576,16 +576,41 @@
       : `${a.importi.length ? `<p class="small muted">I commi in evidenza contengono importi in euro.</p>` : ""}${a.commi.map((c, i) => `<div class="comma ${a.importi.includes(i) ? "imp" : ""}">${hl(c)}</div>`).join("")}
          ${n === 135 ? `<p class="mt-s"><a class="pill primary small" href="#/tutto" data-close>Vedi gli allegati 5, 6 e 7</a></p>` : ""}`;
     sh.innerHTML = `<div class="sheet-h"><button class="x" data-close aria-label="Chiudi">×</button>
-      <div class="small muted">${esc(cap(a.titolo || ""))}${a.capo ? " · " + esc(cap(a.capo)) : ""}</div>
+      <div class="small muted sheet-path" title="${esc(cap(a.titolo || ""))}${a.capo ? " · " + esc(cap(a.capo)) : ""}">${esc(cap(a.titolo || ""))}${a.capo ? " · " + esc(cap(a.capo)) : ""}</div>
       <h2 class="h-s" id="sheet-title" style="margin-top:6px">Art. ${a.n} · ${esc(a.rubrica)}</h2>
       <div class="ctl mt-s"><span class="seg" data-sheet="${a.n}"><button data-v="ddl" class="${tab === "ddl" ? "on" : ""}">Testo del DDL</button>${a.rt ? `<button data-v="rt" class="${tab === "rt" ? "on" : ""}">Relazione tecnica</button>` : ""}</span>
-      <span class="a-m">${Object.keys(a.ministeri).map((k) => `<a class="badge g" href="#/ministero/${k}" data-close>${esc(D.minBy[k].breve)}</a>`).join(" ")}</span></div></div>
+      <span class="a-m">${Object.keys(a.ministeri).map((k) => `<a class="badge g" href="#/ministero/${k}" data-close>${esc(D.minBy[k].breve)}</a>`).join(" ")}</span>
+      <span class="zoom" role="group" aria-label="Dimensione della lettura">
+        <button data-zoom="-1" aria-label="Rimpicciolisci" title="Rimpicciolisci (tasto -)">−</button>
+        <button data-zoom="0" class="zv" aria-label="Dimensione normale" title="Dimensione normale (tasto 0)">${Math.round(ZOOMS[SV.z] * 100)}%</button>
+        <button data-zoom="1" aria-label="Ingrandisci" title="Ingrandisci (tasto +)">+</button>
+        <button data-full aria-pressed="${SV.full}" title="${SV.full ? "Riduci" : "Espandi a tutto schermo"} (tasto F)">${SV.full ? "Riduci" : "Espandi"}</button>
+      </span></div></div>
       <div class="sheet-b">${body}</div>`;
+    sh.style.setProperty("--z", ZOOMS[SV.z]);
+    sh.classList.toggle("full", SV.full);
     if (sh.hidden) {
       sh.hidden = false; bk.hidden = false; document.body.style.overflow = "hidden";
       requestAnimationFrame(() => { sh.classList.add("show"); bk.classList.add("show"); });
       lastFocus = document.activeElement; setTimeout(() => $(".x", sh).focus(), 50);
     }
+  }
+  // dimensione e ampiezza del foglio di lettura, ricordate tra un'apertura e l'altra
+  const ZOOMS = [0.6, 0.7, 0.8, 0.9, 1, 1.15, 1.3];
+  const SV = { z: 4, full: false };
+  try { const v = JSON.parse(localStorage.getItem("sheetView") || "{}"); if (ZOOMS[v.z]) SV.z = v.z; SV.full = !!v.full; } catch (e) { /* storage non disponibile */ }
+  function saveSV() { try { localStorage.setItem("sheetView", JSON.stringify(SV)); } catch (e) { /* ignora */ } }
+  function setZoom(d) {
+    SV.z = d === 0 ? 4 : Math.max(0, Math.min(ZOOMS.length - 1, SV.z + d));
+    $("#sheet").style.setProperty("--z", ZOOMS[SV.z]);
+    const zv = $(".zoom .zv"); if (zv) zv.textContent = Math.round(ZOOMS[SV.z] * 100) + "%";
+    saveSV();
+  }
+  function toggleFull() {
+    SV.full = !SV.full;
+    $("#sheet").classList.toggle("full", SV.full);
+    const b = $("[data-full]"); if (b) { b.textContent = SV.full ? "Riduci" : "Espandi"; b.setAttribute("aria-pressed", SV.full); b.title = (SV.full ? "Riduci" : "Espandi a tutto schermo") + " (tasto F)"; }
+    saveSV();
   }
   let lastFocus = null;
   function closeSheet() {
@@ -661,6 +686,9 @@
     const t = e.target;
     if (t.closest("[data-close]")) { closeSheet(); if (!t.closest("a")) e.preventDefault(); return; }
     if (t.id === "sheet-back") { closeSheet(); return; }
+    const zb = t.closest("[data-zoom]");
+    if (zb) { setZoom(+zb.dataset.zoom); return; }
+    if (t.closest("[data-full]")) { toggleFull(); return; }
     const sb = t.closest("[data-sheet] button");
     if (sb) { openArt(+sb.parentElement.dataset.sheet, sb.dataset.v); $(".sheet-b").scrollTop = 0; return; }
     const art = t.closest("[data-art]");
@@ -678,7 +706,14 @@
     const sg = t.closest("[data-seg] button");
     if (sg) { const k = sg.parentElement.dataset.seg; if (k === "year") ST.year = +sg.dataset.v; if (k === "mode") ST.mode = sg.dataset.v; if (k === "tree") { ST.tree = sg.dataset.v; ST.open.clear(); } render(true); }
   });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closeSheet(); return; }
+    if ($("#sheet").hidden || e.ctrlKey || e.metaKey || e.altKey || /input|textarea/i.test(e.target.tagName)) return;
+    if (e.key === "-") setZoom(-1);
+    else if (e.key === "+" || e.key === "=") setZoom(1);
+    else if (e.key === "0") setZoom(0);
+    else if (e.key === "f" || e.key === "F") toggleFull();
+  });
   document.addEventListener("submit", (e) => {
     e.preventDefault();
     if (e.target.id === "sform") { const q = $("#sq").value.trim(); location.hash = "#/argomento/" + enc(q); }
